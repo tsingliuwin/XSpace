@@ -576,7 +576,7 @@ impl eframe::App for SpaceProbeApp {
                         let col0_width = 40.0;
                         let col1_width = 85.0;
                         let col2_width = if is_dir_mode { 90.0 } else { 0.0 };
-                        let col4_width = 100.0;
+                        let col4_width = 40.0;
                         let spacing = 12.0;
                         let num_spacings = if is_dir_mode { 4.0 } else { 3.0 };
                         let path_width = (available_width - (col0_width + col1_width + col2_width + col4_width + num_spacings * spacing + 4.0)).max(150.0);
@@ -636,7 +636,7 @@ impl eframe::App for SpaceProbeApp {
                                     // 打开所在目录按钮 (靠右对齐)
                                     ui.allocate_ui([col4_width, 22.0].into(), |ui| {
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.add_sized([100.0, 22.0], egui::Button::new("📂 定位文件")).clicked() {
+                                            if ui.add_sized([26.0, 22.0], egui::Button::new("📂")).clicked() {
                                                 open_in_explorer(&file.path);
                                             }
                                         });
