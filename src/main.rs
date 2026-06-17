@@ -10,14 +10,24 @@ use rayon::prelude::*;
 use std::sync::mpsc;
 use eframe::egui;
 
-// 记录大文件信息
+// 扫描模式
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum ScanMode {
+    BigFiles,       // 找大文件
+    EmptyFiles,     // 找空文件
+    CustomFileName, // 找指定文件
+    CustomDirName,  // 找指定目录
+}
+
+// 记录大文件或目录信息
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileInfo {
     size: u64,
     path: String,
+    is_dir: bool,
 }
 
-// 排序规则：按文件大小对比（最大堆）
+// 排序规则：按大小对比（最大堆）
 impl Ord for FileInfo {
     fn cmp(&self, other: &Self) -> Ordering {
         self.size.cmp(&other.size)
@@ -44,6 +54,15 @@ struct DiskInfo {
     is_selected: bool,
 }
 
+// 扫描参数配置
+#[derive(Clone, Debug)]
+struct ScanConfig {
+    selected_roots: Vec<String>,
+    scan_mode: ScanMode,
+    min_size_bytes: u64,
+    query: String,
+}
+
 // 线程间通信消息
 enum ScanMessage {
     Progress {
@@ -64,6 +83,10 @@ enum ScanMessage {
 struct SpaceProbeApp {
     disks: Vec<DiskInfo>,
     min_size_mb: f64,
+    scan_mode: ScanMode,
+    file_query: String,
+    dir_query: String,
+    top_n: usize,
     
     // 扫描状态
     is_scanning: bool,
@@ -77,6 +100,19 @@ struct SpaceProbeApp {
     // 线程控制
     rx: Option<mpsc::Receiver<ScanMessage>>,
     cancel_flag: Option<Arc<AtomicBool>>,
+}
+
+// 递归计算目录的总大小（使用项目已有的 walkdir 依赖进行并发安全计算）
+fn get_dir_size(path: &std::path::Path) -> u64 {
+    let mut total_size = 0;
+    for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.is_file() {
+                total_size += metadata.len();
+            }
+        }
+    }
+    total_size
 }
 
 impl SpaceProbeApp {
@@ -95,6 +131,10 @@ impl SpaceProbeApp {
         Self {
             disks,
             min_size_mb: 100.0,
+            scan_mode: ScanMode::BigFiles,
+            file_query: String::new(),
+            dir_query: String::new(),
+            top_n: 20,
             is_scanning: false,
             scanned_files: 0,
             scanned_dirs: 0,
@@ -128,11 +168,27 @@ impl SpaceProbeApp {
         }
 
         let min_size_bytes = (self.min_size_mb * 1024.0 * 1024.0) as u64;
+        let query = match self.scan_mode {
+            ScanMode::CustomFileName => self.file_query.trim().to_lowercase(),
+            ScanMode::CustomDirName => self.dir_query.trim().to_lowercase(),
+            _ => String::new(),
+        };
+
+        let config = ScanConfig {
+            selected_roots,
+            scan_mode: self.scan_mode,
+            min_size_bytes,
+            query,
+        };
+
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         
         let cancel_flag = Arc::new(AtomicBool::new(false));
         self.cancel_flag = Some(cancel_flag.clone());
+
+        let config_clone = config.clone();
+        let cancel_clone = cancel_flag.clone();
 
         // 创建后台工作线程
         std::thread::spawn(move || {
@@ -141,14 +197,16 @@ impl SpaceProbeApp {
             let total_dirs = Arc::new(AtomicUsize::new(0));
             let last_report = Arc::new(Mutex::new(Instant::now()));
             
-            let cancel_clone = cancel_flag.clone();
+            let cancel_inner = cancel_clone.clone();
             let tx_clone = tx.clone();
+            let config_inner = config_clone.clone();
 
             // 多盘符并行扫描
-            selected_roots.into_par_iter().for_each(|root| {
+            config_clone.selected_roots.into_par_iter().for_each(|root| {
                 let walk = WalkDirGeneric::<FileSizeState>::new(&root)
                     .process_read_dir({
-                        let cancel = cancel_clone.clone();
+                        let cancel = cancel_inner.clone();
+                        let config = config_inner.clone();
                         move |_depth, _path, _state, children| {
                             if cancel.load(AtomicOrdering::Relaxed) {
                                 children.clear();
@@ -157,8 +215,11 @@ impl SpaceProbeApp {
                             for entry_result in children.iter_mut() {
                                 if let Ok(entry) = entry_result {
                                     if !entry.file_type.is_dir() {
-                                        if let Ok(metadata) = entry.metadata() {
-                                            entry.client_state = metadata.len();
+                                        // 仅在大文件模式下并发预读大小以提高速度
+                                        if config.scan_mode == ScanMode::BigFiles {
+                                            if let Ok(metadata) = entry.metadata() {
+                                                entry.client_state = metadata.len();
+                                            }
                                         }
                                     }
                                 }
@@ -167,7 +228,7 @@ impl SpaceProbeApp {
                     });
 
                 for entry in walk {
-                    if cancel_clone.load(AtomicOrdering::Relaxed) {
+                    if cancel_inner.load(AtomicOrdering::Relaxed) {
                         break;
                     }
                     let entry = match entry {
@@ -175,15 +236,60 @@ impl SpaceProbeApp {
                         Err(_) => continue,
                     };
 
-                    if entry.file_type.is_dir() {
+                    let is_dir = entry.file_type.is_dir();
+                    if is_dir {
                         total_dirs.fetch_add(1, AtomicOrdering::Relaxed);
                     } else {
                         total_files.fetch_add(1, AtomicOrdering::Relaxed);
-                        let size = entry.client_state;
-                        if size >= min_size_bytes {
-                            let path = entry.path().display().to_string();
-                            let _ = tx_clone.send(ScanMessage::BigFile(FileInfo { size, path }));
+                    }
+
+                    let file_name = entry.file_name.to_string_lossy().to_lowercase();
+                    let path = entry.path().display().to_string();
+
+                    let mut matched = false;
+                    let mut entry_size = 0;
+
+                    match config_inner.scan_mode {
+                        ScanMode::BigFiles => {
+                            if !is_dir {
+                                entry_size = entry.client_state;
+                                if entry_size >= config_inner.min_size_bytes {
+                                    matched = true;
+                                }
+                            }
                         }
+                        ScanMode::EmptyFiles => {
+                            if !is_dir {
+                                if let Ok(metadata) = entry.metadata() {
+                                    if metadata.len() == 0 {
+                                        matched = true;
+                                        entry_size = 0;
+                                    }
+                                }
+                            }
+                        }
+                        ScanMode::CustomFileName => {
+                            if !is_dir && file_name.contains(&config_inner.query) {
+                                if let Ok(metadata) = entry.metadata() {
+                                    entry_size = metadata.len();
+                                    matched = true;
+                                }
+                            }
+                        }
+                        ScanMode::CustomDirName => {
+                            if is_dir && file_name.contains(&config_inner.query) {
+                                entry_size = get_dir_size(&entry.path());
+                                matched = true;
+                            }
+                        }
+                    }
+
+                    if matched {
+                        let _ = tx_clone.send(ScanMessage::BigFile(FileInfo {
+                            size: entry_size,
+                            path,
+                            is_dir,
+                        }));
                     }
 
                     // 控制汇报频率在 100ms 左右
@@ -207,7 +313,7 @@ impl SpaceProbeApp {
                 files: total_files.load(AtomicOrdering::Relaxed),
                 dirs: total_dirs.load(AtomicOrdering::Relaxed),
                 elapsed,
-                was_cancelled: cancel_flag.load(AtomicOrdering::Relaxed),
+                was_cancelled: cancel_clone.load(AtomicOrdering::Relaxed),
             });
             ctx.request_repaint();
         });
@@ -255,10 +361,13 @@ impl eframe::App for SpaceProbeApp {
                             self.current_path = current_path;
                         }
                         ScanMessage::BigFile(file) => {
-                            // 保持按大小降序插入
-                            if let Err(idx) = self.big_files.binary_search_by(|probe| file.size.cmp(&probe.size).reverse()) {
+                            let idx = match self.big_files.binary_search_by(|probe| file.size.cmp(&probe.size).reverse()) {
+                                Ok(idx) => idx,
+                                Err(idx) => idx,
+                            };
+                            if idx < self.top_n {
                                 self.big_files.insert(idx, file);
-                                self.big_files.truncate(20); // 保留 Top 20
+                                self.big_files.truncate(self.top_n); 
                             }
                         }
                         ScanMessage::Finished { files, dirs, elapsed, was_cancelled } => {
@@ -280,93 +389,33 @@ impl eframe::App for SpaceProbeApp {
         }
 
         // 2. 绘制 UI
-        // 左侧配置面板
         egui::SidePanel::left("control_panel")
             .resizable(false)
             .default_width(260.0)
             .show(ctx, |ui| {
-                ui.add_space(10.0);
-                ui.heading("🔍 空间探针 SpaceProbe");
-                ui.add_space(5.0);
-                ui.label(egui::RichText::new("全盘多线程大文件深度扫描").weak().size(11.0));
-                
-                ui.add_space(15.0);
-                ui.separator();
-                ui.add_space(10.0);
-                
-                ui.strong("选择扫描分区：");
-                ui.add_space(5.0);
-                
-                // 禁用选择框（在扫描中时）
-                ui.add_enabled_ui(!self.is_scanning, |ui| {
-                    egui::ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                        for disk in &mut self.disks {
-                            ui.checkbox(&mut disk.is_selected, format!("本地磁盘 ({})", disk.mount_point));
-                        }
-                    });
-                });
-                
-                ui.add_space(15.0);
-                ui.strong("过滤大小阈值 (MB)：");
-                ui.add_space(5.0);
-                ui.add_enabled_ui(!self.is_scanning, |ui| {
-                    ui.add(egui::Slider::new(&mut self.min_size_mb, 10.0..=10240.0)
-                        .text("MB")
-                        .logarithmic(true)
-                        .integer()
-                    );
-                });
-                
-                ui.add_space(20.0);
-                ui.separator();
-                ui.add_space(15.0);
-                
-                // 控制按钮
-                if self.is_scanning {
-                    let btn = egui::Button::new(egui::RichText::new("⏹ 停止扫描").color(egui::Color32::WHITE))
-                        .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
-                    if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
-                        self.stop_scan();
-                    }
-                } else {
-                    let has_selection = self.disks.iter().any(|d| d.is_selected);
-                    ui.add_enabled_ui(has_selection, |ui| {
-                        let btn = egui::Button::new(egui::RichText::new("▶ 开始全盘扫描").color(egui::Color32::WHITE))
-                            .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB)); // 优雅的深蓝色
-                        if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
-                            self.start_scan(ctx.clone());
-                        }
-                    });
-                }
-                
-                ui.add_space(25.0);
-                
-                // 扫描统计信息
-                ui.strong("状态概要");
-                ui.add_space(6.0);
-                egui::Frame::none()
-                    .fill(ui.visuals().window_fill) // 使用动态容器背景色，完美匹配亮色主题
-                    .rounding(8.0)
-                    .inner_margin(12.0)
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        ui.set_width(ui.available_width()); // 撑满左侧面板宽度
-
-                        let (status_text, status_color) = if self.is_scanning {
-                            ("⚡ 正在扫描...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4)) // 蓝绿色
-                        } else if self.scan_duration.is_some() {
-                            if self.was_cancelled { 
-                                ("⏹ 扫描手动停止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b)) // 琥珀橙
-                            } else { 
-                                ("✨ 扫描已完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81)) // 翡翠绿
-                            }
-                        } else {
-                            ("💤 就绪", egui::Color32::from_rgb(0x94, 0xA3, 0xB8)) // 灰石色
-                        };
-
+                        ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            ui.label("当前状态:");
+                            ui.heading("🔍 空间探针");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(status_text).color(status_color).strong());
+                                ui.label(egui::RichText::new("SpaceProbe").weak().size(10.0));
+                            });
+                        });
+                        
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        
+                        // 1. 分区选择
+                        ui.strong("扫描分区：");
+                        ui.add_space(4.0);
+                        ui.add_enabled_ui(!self.is_scanning, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for disk in &mut self.disks {
+                                    ui.checkbox(&mut disk.is_selected, &disk.mount_point);
+                                }
                             });
                         });
                         
@@ -374,31 +423,180 @@ impl eframe::App for SpaceProbeApp {
                         ui.separator();
                         ui.add_space(6.0);
 
+                        // 2. 结果数量 (Top N) - 简化为一行，滑块和输入框放一排
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("文件数量:").weak());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(format!("{}", self.scanned_files)).strong());
+                            ui.strong("Top N：");
+                            ui.spacing_mut().slider_width = 110.0;
+                            ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                ui.add(egui::Slider::new(&mut self.top_n, 5..=1000)
+                                    .integer()
+                                    .show_value(false)
+                                );
+                                ui.add(egui::DragValue::new(&mut self.top_n).clamp_range(5..=10000));
                             });
                         });
                         
-                        ui.add_space(4.0);
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.add_space(6.0);
 
+                        // 3. 扫描模式
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("目录数量:").weak());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new(format!("{}", self.scanned_dirs)).strong());
+                            ui.strong("扫描模式：");
+                            ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                egui::ComboBox::from_id_source("scan_mode_combo")
+                                    .width(140.0)
+                                    .selected_text(match self.scan_mode {
+                                        ScanMode::BigFiles => "🔍 大文件",
+                                        ScanMode::EmptyFiles => "📄 空文件",
+                                        ScanMode::CustomFileName => "🗂 搜文件",
+                                        ScanMode::CustomDirName => "📁 搜目录",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut self.scan_mode, ScanMode::BigFiles, "🔍 大文件");
+                                        ui.selectable_value(&mut self.scan_mode, ScanMode::EmptyFiles, "📄 空文件");
+                                        ui.selectable_value(&mut self.scan_mode, ScanMode::CustomFileName, "🗂 搜文件");
+                                        ui.selectable_value(&mut self.scan_mode, ScanMode::CustomDirName, "📁 搜目录");
+                                    });
                             });
                         });
 
-                        if let Some(dur) = self.scan_duration {
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("总共耗时:").weak());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(egui::RichText::new(format!("{:.2} 秒", dur.as_secs_f32())).color(egui::Color32::from_rgb(0x38, 0xBD, 0xF8)).strong());
+                        // 4. 模式参数展示
+                        ui.add_space(6.0);
+                        match self.scan_mode {
+                            ScanMode::BigFiles => {
+                                ui.horizontal(|ui| {
+                                    ui.strong("阈值：");
+                                    ui.spacing_mut().slider_width = 100.0;
+                                    ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                        ui.add(egui::Slider::new(&mut self.min_size_mb, 1.0..=10240.0)
+                                            .logarithmic(true)
+                                            .integer()
+                                            .show_value(false)
+                                        );
+                                        ui.add(egui::DragValue::new(&mut self.min_size_mb)
+                                            .clamp_range(1.0..=102400.0)
+                                            .suffix(" MB")
+                                        );
+                                    });
                                 });
+                            }
+                            ScanMode::EmptyFiles => {
+                                ui.label(egui::RichText::new("ℹ️ 检索体积为 0 字节的空文件").weak().size(11.0));
+                            }
+                            ScanMode::CustomFileName => {
+                                ui.strong("文件名关键字：");
+                                ui.add_space(2.0);
+                                ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                    ui.add(egui::TextEdit::singleline(&mut self.file_query).desired_width(f32::INFINITY));
+                                });
+                                if self.file_query.trim().is_empty() {
+                                    ui.add_space(2.0);
+                                    ui.label(egui::RichText::new("⚠️ 请输入关键字").color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(10.0));
+                                }
+                            }
+                            ScanMode::CustomDirName => {
+                                ui.strong("目录名关键字：");
+                                ui.add_space(2.0);
+                                ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                    ui.add(egui::TextEdit::singleline(&mut self.dir_query).desired_width(f32::INFINITY));
+                                });
+                                if self.dir_query.trim().is_empty() {
+                                    ui.add_space(2.0);
+                                    ui.label(egui::RichText::new("⚠️ 请输入关键字").color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(10.0));
+                                }
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+                        
+                        // 控制按钮
+                        if self.is_scanning {
+                            let btn = egui::Button::new(egui::RichText::new("⏹ 停止").color(egui::Color32::WHITE))
+                                .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
+                            if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
+                                self.stop_scan();
+                            }
+                        } else {
+                            let has_selection = self.disks.iter().any(|d| d.is_selected);
+                            let query_valid = match self.scan_mode {
+                                ScanMode::CustomFileName => !self.file_query.trim().is_empty(),
+                                ScanMode::CustomDirName => !self.dir_query.trim().is_empty(),
+                                _ => true,
+                            };
+                            let can_start = has_selection && query_valid;
+                            ui.add_enabled_ui(can_start, |ui| {
+                                let btn = egui::Button::new(egui::RichText::new("▶ 开始扫描").color(egui::Color32::WHITE))
+                                    .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB));
+                                if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
+                                    self.start_scan(ctx.clone());
+                                }
                             });
                         }
+                        
+                        ui.add_space(10.0);
+                        
+                        // 状态概要
+                        ui.strong("状态概要");
+                        ui.add_space(4.0);
+                        egui::Frame::none()
+                            .fill(ui.visuals().window_fill)
+                            .rounding(8.0)
+                            .inner_margin(8.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+
+                                let (status_text, status_color) = if self.is_scanning {
+                                    ("⚡ 正在扫描...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
+                                } else if self.scan_duration.is_some() {
+                                    if self.was_cancelled { 
+                                        ("⏹ 手动停止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b))
+                                    } else { 
+                                        ("✨ 扫描已完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81))
+                                    }
+                                } else {
+                                    ("💤 就绪", egui::Color32::from_rgb(0x94, 0xA3, 0xB8))
+                                };
+
+                                ui.horizontal(|ui| {
+                                    ui.label("当前状态:");
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(status_text).color(status_color).strong());
+                                    });
+                                });
+                                
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("文件数量:").weak());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(format!("{}", self.scanned_files)).strong());
+                                    });
+                                });
+                                
+                                ui.add_space(2.0);
+
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("目录数量:").weak());
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(egui::RichText::new(format!("{}", self.scanned_dirs)).strong());
+                                    });
+                                });
+
+                                if let Some(dur) = self.scan_duration {
+                                    ui.add_space(2.0);
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("总共耗时:").weak());
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(egui::RichText::new(format!("{:.2} 秒", dur.as_secs_f32())).color(egui::Color32::from_rgb(0x38, 0xBD, 0xF8)).strong());
+                                        });
+                                    });
+                                }
+                            });
                     });
             });
 
@@ -431,7 +629,13 @@ impl eframe::App for SpaceProbeApp {
                     ui.add_space(10.0);
                     ui.separator();
                 } else if let Some(dur) = self.scan_duration {
-                    let title = if self.was_cancelled { "⏹ 扫描中断 - 以下为已扫描的元凶大文件 Top 20" } else { "💾 【全台电脑空间元凶 Top 20 榜单】" };
+                    let title = match self.scan_mode {
+                        ScanMode::BigFiles => format!("💾 【全台电脑空间元凶 Top {} 榜单】", self.top_n),
+                        ScanMode::EmptyFiles => format!("📄 【全台电脑空文件 Top {} 榜单】", self.top_n),
+                        ScanMode::CustomFileName => format!("🗂 【指定文件名匹配结果 Top {} 榜单】", self.top_n),
+                        ScanMode::CustomDirName => format!("📁 【指定目录名匹配结果 Top {} 榜单】", self.top_n),
+                    };
+                    let title = if self.was_cancelled { format!("⏹ 扫描中断 - 以下为已扫描的 Top {} 榜单", self.top_n) } else { title };
                     ui.heading(title);
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(format!("共扫描了 {} 个目录，{} 个文件，耗时 {:.2} 秒", self.scanned_dirs, self.scanned_files, dur.as_secs_f32())).weak().size(12.0));
@@ -455,9 +659,9 @@ impl eframe::App for SpaceProbeApp {
                             .show(ui, |ui| {
                                 // 表格头部
                                 ui.strong("排名");
-                                ui.strong("文件大小");
+                                ui.strong("占用大小");
                                 ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
-                                    ui.strong("文件完整路径");
+                                    ui.strong("完整路径");
                                 });
                                 ui.strong("操作");
                                 ui.end_row();
@@ -479,7 +683,12 @@ impl eframe::App for SpaceProbeApp {
 
                                     // 路径（可选择复制，超长截断，左对齐）
                                     ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
-                                        ui.add(egui::Label::new(&file.path).selectable(true).truncate(true));
+                                        let display_path = if file.is_dir {
+                                            format!("📁 {}", file.path)
+                                        } else {
+                                            format!("📄 {}", file.path)
+                                        };
+                                        ui.add(egui::Label::new(display_path).selectable(true).truncate(true));
                                     });
 
                                     // 打开所在目录按钮
