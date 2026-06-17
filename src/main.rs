@@ -25,6 +25,7 @@ struct FileInfo {
     size: u64,
     path: String,
     is_dir: bool,
+    file_count: Option<usize>,
 }
 
 // 排序规则：按大小对比（最大堆）
@@ -102,17 +103,19 @@ struct SpaceProbeApp {
     cancel_flag: Option<Arc<AtomicBool>>,
 }
 
-// 递归计算目录的总大小（使用项目已有的 walkdir 依赖进行并发安全计算）
-fn get_dir_size(path: &std::path::Path) -> u64 {
+// 递归计算目录的总大小与内部文件数（使用项目已有的 walkdir 依赖进行并发安全计算）
+fn get_dir_stats(path: &std::path::Path) -> (u64, usize) {
     let mut total_size = 0;
+    let mut file_count = 0;
     for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
         if let Ok(metadata) = entry.metadata() {
             if metadata.is_file() {
                 total_size += metadata.len();
+                file_count += 1;
             }
         }
     }
-    total_size
+    (total_size, file_count)
 }
 
 impl SpaceProbeApp {
@@ -248,6 +251,7 @@ impl SpaceProbeApp {
 
                     let mut matched = false;
                     let mut entry_size = 0;
+                    let mut entry_file_count = None;
 
                     match config_inner.scan_mode {
                         ScanMode::BigFiles => {
@@ -278,7 +282,9 @@ impl SpaceProbeApp {
                         }
                         ScanMode::CustomDirName => {
                             if is_dir && file_name.contains(&config_inner.query) {
-                                entry_size = get_dir_size(&entry.path());
+                                let (dir_size, file_count) = get_dir_stats(&entry.path());
+                                entry_size = dir_size;
+                                entry_file_count = Some(file_count);
                                 matched = true;
                             }
                         }
@@ -289,6 +295,7 @@ impl SpaceProbeApp {
                             size: entry_size,
                             path,
                             is_dir,
+                            file_count: entry_file_count,
                         }));
                     }
 
@@ -646,24 +653,37 @@ impl eframe::App for SpaceProbeApp {
                 ui.add_space(10.0);
                 
                 // 大文件数据表格
-                let available_width = ui.available_width();
-                let path_width = (available_width - 260.0).max(200.0);
-
-                egui::ScrollArea::both()
+                egui::ScrollArea::vertical()
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
+                        let is_dir_mode = self.scan_mode == ScanMode::CustomDirName;
+                        let available_width = ui.available_width();
+                        let col0_width = 40.0;
+                        let col1_width = 85.0;
+                        let col2_width = if is_dir_mode { 90.0 } else { 0.0 };
+                        let col4_width = 100.0;
+                        let spacing = 12.0;
+                        let num_spacings = if is_dir_mode { 4.0 } else { 3.0 };
+                        let path_width = (available_width - (col0_width + col1_width + col2_width + col4_width + num_spacings * spacing + 4.0)).max(150.0);
+
                         egui::Grid::new("big_files_table")
-                            .num_columns(4)
-                            .spacing([12.0, 10.0])
+                            .num_columns(if is_dir_mode { 5 } else { 4 })
+                            .spacing([spacing, 10.0])
                             .striped(true)
                             .show(ui, |ui| {
                                 // 表格头部
-                                ui.strong("排名");
-                                ui.strong("占用大小");
-                                ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
-                                    ui.strong("完整路径");
+                                ui.add_sized([col0_width, 20.0], egui::Label::new(egui::RichText::new("排名").strong()));
+                                ui.add_sized([col1_width, 20.0], egui::Label::new(egui::RichText::new("占用大小").strong()));
+                                if is_dir_mode {
+                                    ui.add_sized([col2_width, 20.0], egui::Label::new(egui::RichText::new("内含文件数").strong()));
+                                }
+                                ui.add_sized([path_width, 20.0], egui::Label::new(egui::RichText::new("完整路径").strong()));
+                                
+                                ui.allocate_ui([col4_width, 20.0].into(), |ui| {
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.strong("操作");
+                                    });
                                 });
-                                ui.strong("操作");
                                 ui.end_row();
 
                                 for (idx, file) in self.big_files.iter().enumerate() {
@@ -675,26 +695,37 @@ impl eframe::App for SpaceProbeApp {
                                     } else {
                                         ui.visuals().widgets.noninteractive.fg_stroke.color
                                     };
-                                    ui.label(egui::RichText::new(rank_text).color(rank_color).strong());
+                                    ui.add_sized([col0_width, 20.0], egui::Label::new(egui::RichText::new(rank_text).color(rank_color).strong()));
 
                                     // 大小高亮
                                     let size_str = format_size(file.size);
-                                    ui.label(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x02, 0x84, 0xC7)).strong());
+                                    ui.add_sized([col1_width, 20.0], egui::Label::new(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x02, 0x84, 0xC7)).strong()));
+
+                                    // 文件数高亮 (仅目录模式)
+                                    if is_dir_mode {
+                                        let count_str = match file.file_count {
+                                            Some(count) => format!("{} 个", count),
+                                            None => "-".to_string(),
+                                        };
+                                        ui.add_sized([col2_width, 20.0], egui::Label::new(egui::RichText::new(count_str).color(egui::Color32::from_rgb(0x10, 0xB9, 0x81)).strong()));
+                                    }
 
                                     // 路径（可选择复制，超长截断，左对齐）
-                                    ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
-                                        let display_path = if file.is_dir {
-                                            format!("📁 {}", file.path)
-                                        } else {
-                                            format!("📄 {}", file.path)
-                                        };
-                                        ui.add(egui::Label::new(display_path).selectable(true).truncate(true));
-                                    });
+                                    let display_path = if file.is_dir {
+                                        format!("📁 {}", file.path)
+                                    } else {
+                                        format!("📄 {}", file.path)
+                                    };
+                                    ui.add_sized([path_width, 20.0], egui::Label::new(display_path).selectable(true).truncate(true));
 
-                                    // 打开所在目录按钮
-                                    if ui.button("📂 定位文件").clicked() {
-                                        open_in_explorer(&file.path);
-                                    }
+                                    // 打开所在目录按钮 (靠右对齐)
+                                    ui.allocate_ui([col4_width, 22.0].into(), |ui| {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.add_sized([100.0, 22.0], egui::Button::new("📂 定位文件")).clicked() {
+                                                open_in_explorer(&file.path);
+                                            }
+                                        });
+                                    });
                                     ui.end_row();
                                 }
                             });
