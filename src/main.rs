@@ -237,7 +237,7 @@ fn format_size(size: u64) -> String {
 // 在 Windows 资源管理器中打开并选中该文件
 fn open_in_explorer(path: &str) {
     let _ = std::process::Command::new("explorer")
-        .arg(format!("/select,\"{}\"", path))
+        .arg(format!("/select,{}", path))
         .spawn();
 }
 
@@ -456,7 +456,9 @@ impl eframe::App for SpaceProbeApp {
                                 // 表格头部
                                 ui.strong("排名");
                                 ui.strong("文件大小");
-                                ui.add_sized([path_width, 20.0], egui::Label::new(egui::RichText::new("文件完整路径").strong()));
+                                ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
+                                    ui.strong("文件完整路径");
+                                });
                                 ui.strong("操作");
                                 ui.end_row();
 
@@ -475,8 +477,10 @@ impl eframe::App for SpaceProbeApp {
                                     let size_str = format_size(file.size);
                                     ui.label(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x06, 0xB6, 0xD4)).strong());
 
-                                    // 路径（可选择复制，超长截断）
-                                    ui.add_sized([path_width, 20.0], egui::Label::new(&file.path).selectable(true).truncate(true));
+                                    // 路径（可选择复制，超长截断，左对齐）
+                                    ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
+                                        ui.add(egui::Label::new(&file.path).selectable(true).truncate(true));
+                                    });
 
                                     // 打开所在目录按钮
                                     if ui.button("📂 定位文件").clicked() {
