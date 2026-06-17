@@ -63,13 +63,13 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
             .with_min_inner_size([750.0, 520.0])
-            .with_title("🔍 全盘大文件空间探针 (SpaceProbe)"),
+            .with_title("🔍 XSpace - 极速磁盘空间探测器"),
         default_theme: eframe::Theme::Light,
         ..Default::default()
     };
     
     eframe::run_native(
-        "space_probe",
+        "xspace",
         options,
         Box::new(|cc| {
             configure_custom_style(&cc.egui_ctx);

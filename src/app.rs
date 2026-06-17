@@ -302,9 +302,9 @@ impl eframe::App for SpaceProbeApp {
                     .show(ui, |ui| {
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            ui.heading("🔍 空间探针");
+                            ui.heading("🔍 XSpace");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new("SpaceProbe").weak().size(10.0));
+                                ui.label(egui::RichText::new("极速空间探测器").weak().size(10.0));
                             });
                         });
                         
@@ -471,12 +471,12 @@ impl eframe::App for SpaceProbeApp {
                                 ui.set_width(ui.available_width());
 
                                 let (status_text, status_color) = if self.is_scanning {
-                                    ("⚡ 正在扫描...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
+                                    ("⚡ 极速扫描中...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
                                 } else if self.scan_duration.is_some() {
                                     if self.was_cancelled { 
-                                        ("⏹ 手动停止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b))
+                                        ("⏹ 扫描已中止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b))
                                     } else { 
-                                        ("✨ 扫描已完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81))
+                                        ("✨ 扫描完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81))
                                     }
                                 } else {
                                     ("💤 就绪", egui::Color32::from_rgb(0x94, 0xA3, 0xB8))
@@ -534,7 +534,7 @@ impl eframe::App for SpaceProbeApp {
                     // 模拟未定百分比的滚动进度条
                     ui.add(egui::ProgressBar::new(0.5)
                         .animate(true)
-                        .text(format!("正在深度读取文件目录 (已发现大文件: {})...", self.big_files.len()))
+                        .text(format!("XSpace 正在并发极速扫描中 (已检索出目标项: {})...", self.big_files.len()))
                     );
                     ui.add_space(5.0);
                     
@@ -552,12 +552,12 @@ impl eframe::App for SpaceProbeApp {
                     ui.separator();
                 } else if let Some(dur) = self.scan_duration {
                     let title = match self.scan_mode {
-                        ScanMode::BigFiles => format!("💾 【全台电脑空间元凶 Top {} 榜单】", self.top_n),
-                        ScanMode::EmptyFiles => format!("📄 【全台电脑空文件 Top {} 榜单】", self.top_n),
-                        ScanMode::CustomFileName => format!("🗂 【指定文件名匹配结果 Top {} 榜单】", self.top_n),
-                        ScanMode::CustomDirName => format!("📁 【指定目录名匹配结果 Top {} 榜单】", self.top_n),
+                        ScanMode::BigFiles => format!("💾 【全盘空间占用元凶 Top {} 榜单】", self.top_n),
+                        ScanMode::EmptyFiles => format!("📄 【全盘零字节空文件 Top {} 榜单】", self.top_n),
+                        ScanMode::CustomFileName => format!("🗂 【文件名匹配结果 Top {} 榜单】", self.top_n),
+                        ScanMode::CustomDirName => format!("📁 【目录名匹配结果 Top {} 榜单】", self.top_n),
                     };
-                    let title = if self.was_cancelled { format!("⏹ 扫描中断 - 以下为已扫描的 Top {} 榜单", self.top_n) } else { title };
+                    let title = if self.was_cancelled { format!("⏹ 扫描已中止 - 以下为已检索的 Top {} 榜单", self.top_n) } else { title };
                     ui.heading(title);
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(format!("共扫描了 {} 个目录，{} 个文件，耗时 {:.2} 秒", self.scanned_dirs, self.scanned_files, dur.as_secs_f32())).weak().size(12.0));
@@ -651,10 +651,10 @@ impl eframe::App for SpaceProbeApp {
                     ui.add_space(100.0);
                     ui.label(egui::RichText::new("💾").size(72.0));
                     ui.add_space(15.0);
-                    ui.heading("欢迎使用全盘空间探针");
+                    ui.heading("欢迎使用 XSpace 极速空间探测器");
                     ui.add_space(10.0);
-                    ui.label("这是一个并发效率极高、轻量级、跨平台的磁盘文件空间清理辅助工具。");
-                    ui.label("利用 Rust 的多线程并行处理能力，可瞬间定位侵占您磁盘空间的“罪魁祸首”。");
+                    ui.label("XSpace 是一款基于 Rust 开发的极速、轻量级磁盘分析与空间清理辅助工具。");
+                    ui.label("依托多线程并行扫描引擎，能在数秒内深度检索全盘，精准定位侵占磁盘空间的“元凶”与无用文件。");
                     ui.add_space(30.0);
                     
                     egui::Frame::none()
@@ -665,11 +665,11 @@ impl eframe::App for SpaceProbeApp {
                             ui.set_max_width(400.0);
                             ui.strong("快速开始步骤：");
                             ui.add_space(6.0);
-                            ui.label("1. 在左侧面板勾选您想要扫描的本地磁盘驱动器。");
+                            ui.label("1. 在左侧面板勾选需要扫描的本地磁盘分区。");
                             ui.add_space(4.0);
-                            ui.label("2. 设置您想过滤的最小文件体积（默认为 100 MB）。");
+                            ui.label("2. 在下拉菜单中选择所需的空间扫描分析模式。");
                             ui.add_space(4.0);
-                            ui.label("3. 点击【开始全盘扫描】按钮，即刻并发检索大文件！");
+                            ui.label("3. 点击【开始扫描】按钮，即刻开启极速并发检索！");
                         });
                 });
             }
