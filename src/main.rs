@@ -101,6 +101,7 @@ struct SpaceProbeApp {
     // 线程控制
     rx: Option<mpsc::Receiver<ScanMessage>>,
     cancel_flag: Option<Arc<AtomicBool>>,
+    validation_error: Option<String>,
 }
 
 // 递归计算目录的总大小与内部文件数（使用项目已有的 walkdir 依赖进行并发安全计算）
@@ -147,6 +148,7 @@ impl SpaceProbeApp {
             was_cancelled: false,
             rx: None,
             cancel_flag: None,
+            validation_error: None,
         }
     }
 
@@ -346,6 +348,21 @@ fn format_size(size: u64) -> String {
         format!("{:.2} KB", kb)
     }
 }
+// 校验关键字合法性
+fn validate_query(query: &str) -> Result<(), String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Err("请输入关键字".to_string());
+    }
+    // Windows 文件/文件夹非法字符: \ / : * ? " < > |
+    let invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+    for c in trimmed.chars() {
+        if invalid_chars.contains(&c) {
+            return Err(format!("包含非法字符 '{}'", c));
+        }
+    }
+    Ok(())
+}
 
 // 在 Windows 资源管理器中打开并选中该文件
 fn open_in_explorer(path: &str) {
@@ -451,6 +468,7 @@ impl eframe::App for SpaceProbeApp {
                         ui.horizontal(|ui| {
                             ui.strong("扫描模式：");
                             ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                let prev_mode = self.scan_mode;
                                 egui::ComboBox::from_id_source("scan_mode_combo")
                                     .width(140.0)
                                     .selected_text(match self.scan_mode {
@@ -465,6 +483,9 @@ impl eframe::App for SpaceProbeApp {
                                         ui.selectable_value(&mut self.scan_mode, ScanMode::CustomFileName, "🗂 搜文件");
                                         ui.selectable_value(&mut self.scan_mode, ScanMode::CustomDirName, "📁 搜目录");
                                     });
+                                if self.scan_mode != prev_mode {
+                                    self.validation_error = None;
+                                }
                             });
                         });
 
@@ -492,26 +513,26 @@ impl eframe::App for SpaceProbeApp {
                                 ui.label(egui::RichText::new("ℹ️ 检索体积为 0 字节的空文件").weak().size(11.0));
                             }
                             ScanMode::CustomFileName => {
-                                ui.strong("文件名关键字：");
-                                ui.add_space(2.0);
-                                ui.add_enabled_ui(!self.is_scanning, |ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut self.file_query).desired_width(f32::INFINITY));
+                                ui.horizontal(|ui| {
+                                    ui.strong("文件名：");
+                                    ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                        let w = ui.available_width();
+                                        if ui.add(egui::TextEdit::singleline(&mut self.file_query).desired_width(w)).changed() {
+                                            self.validation_error = None;
+                                        }
+                                    });
                                 });
-                                if self.file_query.trim().is_empty() {
-                                    ui.add_space(2.0);
-                                    ui.label(egui::RichText::new("⚠️ 请输入关键字").color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(10.0));
-                                }
                             }
                             ScanMode::CustomDirName => {
-                                ui.strong("目录名关键字：");
-                                ui.add_space(2.0);
-                                ui.add_enabled_ui(!self.is_scanning, |ui| {
-                                    ui.add(egui::TextEdit::singleline(&mut self.dir_query).desired_width(f32::INFINITY));
+                                ui.horizontal(|ui| {
+                                    ui.strong("目录名：");
+                                    ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                        let w = ui.available_width();
+                                        if ui.add(egui::TextEdit::singleline(&mut self.dir_query).desired_width(w)).changed() {
+                                            self.validation_error = None;
+                                        }
+                                    });
                                 });
-                                if self.dir_query.trim().is_empty() {
-                                    ui.add_space(2.0);
-                                    ui.label(egui::RichText::new("⚠️ 请输入关键字").color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(10.0));
-                                }
                             }
                         }
 
@@ -528,26 +549,40 @@ impl eframe::App for SpaceProbeApp {
                             }
                         } else {
                             let has_selection = self.disks.iter().any(|d| d.is_selected);
-                            let query_valid = match self.scan_mode {
-                                ScanMode::CustomFileName => !self.file_query.trim().is_empty(),
-                                ScanMode::CustomDirName => !self.dir_query.trim().is_empty(),
-                                _ => true,
-                            };
-                            let can_start = has_selection && query_valid;
-                            ui.add_enabled_ui(can_start, |ui| {
+                            ui.add_enabled_ui(has_selection, |ui| {
                                 let btn = egui::Button::new(egui::RichText::new("▶ 开始扫描").color(egui::Color32::WHITE))
                                     .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB));
                                 if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
-                                    self.start_scan(ctx.clone());
+                                    let mut valid = true;
+                                    self.validation_error = None;
+                                    match self.scan_mode {
+                                        ScanMode::CustomFileName => {
+                                            if let Err(err) = validate_query(&self.file_query) {
+                                                self.validation_error = Some(err);
+                                                valid = false;
+                                            }
+                                        }
+                                        ScanMode::CustomDirName => {
+                                            if let Err(err) = validate_query(&self.dir_query) {
+                                                self.validation_error = Some(err);
+                                                valid = false;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    if valid {
+                                        self.start_scan(ctx.clone());
+                                    }
                                 }
                             });
                         }
+
+                        if let Some(err) = &self.validation_error {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(format!("⚠️ {}", err)).color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(11.0));
+                        }
                         
-                        ui.add_space(10.0);
-                        
-                        // 状态概要
-                        ui.strong("状态概要");
-                        ui.add_space(4.0);
+                        ui.add_space(5.0);
                         egui::Frame::none()
                             .fill(ui.visuals().window_fill)
                             .rounding(8.0)
