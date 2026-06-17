@@ -41,9 +41,43 @@ impl SpaceProbeApp {
         let mut disks = Vec::new();
         for disk in &disks_list {
             if let Some(path_str) = disk.mount_point().to_str() {
+                // macOS 特有过滤：隐藏重复的 Data 卷、Preboot 卷及私有挂载点
+                #[cfg(target_os = "macos")]
+                {
+                    if path_str.starts_with("/System/Volumes/") {
+                        continue;
+                    }
+                    if path_str.starts_with("/private/var/") {
+                        continue;
+                    }
+                    if path_str == "/" {
+                        // 在 macOS 下，默认只勾选用户目录 /Users，因为绝大部分可清理的无用大文件都在这里。
+                        // 同时保留完整系统 / 作为可选项（默认不勾选）。
+                        disks.push(DiskInfo {
+                            name: "🏠 用户目录 (/Users)".to_string(),
+                            mount_point: "/Users".to_string(),
+                            is_selected: true,
+                        });
+                        disks.push(DiskInfo {
+                            name: format!("💻 完整系统 ({})", disk.name().to_string_lossy()),
+                            mount_point: "/".to_string(),
+                            is_selected: false,
+                        });
+                        continue;
+                    }
+                }
+
+                let name = disk.name().to_string_lossy();
+                let display_name = if name.is_empty() {
+                    path_str.to_string()
+                } else {
+                    format!("{} ({})", name, path_str)
+                };
+
                 disks.push(DiskInfo {
+                    name: display_name,
                     mount_point: path_str.to_string(),
-                    is_selected: true, // 默认全选
+                    is_selected: true, // 其他分区默认全选
                 });
             }
         }
@@ -78,10 +112,27 @@ impl SpaceProbeApp {
         self.scan_duration = None;
         self.was_cancelled = false;
 
-        let selected_roots: Vec<String> = self.disks.iter()
+        let mut selected_roots: Vec<String> = self.disks.iter()
             .filter(|d| d.is_selected)
             .map(|d| d.mount_point.clone())
             .collect();
+
+        // 过滤嵌套目录以防止重复扫描（例如如果同时勾选了 / 和 /Users，则只扫描较短的 / 根目录）
+        selected_roots.sort_by_key(|p| p.len());
+        let mut deduplicated_roots = Vec::new();
+        for path in selected_roots {
+            let is_subpath = deduplicated_roots.iter().any(|parent: &String| {
+                if parent == "/" {
+                    true
+                } else {
+                    path.starts_with(&format!("{}/", parent))
+                }
+            });
+            if !is_subpath {
+                deduplicated_roots.push(path);
+            }
+        }
+        let selected_roots = deduplicated_roots;
 
         if selected_roots.is_empty() {
             self.is_scanning = false;
@@ -124,15 +175,42 @@ impl SpaceProbeApp {
 
             // 多盘符并行扫描
             config_clone.selected_roots.into_par_iter().for_each(|root| {
+                let root_path = root.clone();
                 let walk = WalkDirGeneric::<FileSizeState>::new(&root)
                     .process_read_dir({
                         let cancel = cancel_inner.clone();
                         let config = config_inner.clone();
+                        let root_path = root_path.clone();
                         move |_depth, _path, _state, children| {
                             if cancel.load(AtomicOrdering::Relaxed) {
                                 children.clear();
                                 return;
                             }
+
+                            // 过滤不需要扫描的系统目录或重复挂载目录
+                            children.retain(|entry_result| {
+                                if let Ok(entry) = entry_result {
+                                    let path = entry.path();
+                                    
+                                    // 1. 过滤设备文件目录
+                                    if path.starts_with("/dev") {
+                                        return false;
+                                    }
+                                    
+                                    // 2. 在 macOS / Linux 从 "/" 根路径扫描时，过滤掉其他外部挂载卷与内部重定向卷
+                                    #[cfg(unix)]
+                                    if root_path == "/" {
+                                        if path.starts_with("/Volumes") || path.starts_with("/System/Volumes") {
+                                            return false;
+                                        }
+                                        if path.starts_with("/proc") || path.starts_with("/sys") || path.starts_with("/run") || path.starts_with("/mnt") || path.starts_with("/media") {
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            });
+
                             for entry_result in children.iter_mut() {
                                 if let Ok(entry) = entry_result {
                                     if !entry.file_type.is_dir() {
@@ -324,7 +402,7 @@ impl eframe::App for SpaceProbeApp {
                                 ui.add_enabled_ui(!self.is_scanning, |ui| {
                                     ui.horizontal_wrapped(|ui| {
                                         for disk in &mut self.disks {
-                                            ui.checkbox(&mut disk.is_selected, &disk.mount_point);
+                                            ui.checkbox(&mut disk.is_selected, &disk.name);
                                         }
                                     });
                                 });

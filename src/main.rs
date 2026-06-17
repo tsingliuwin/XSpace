@@ -10,21 +10,41 @@ use app::SpaceProbeApp;
 
 // 配置自定义样式，打造高雅的浅色系风格
 fn configure_custom_style(ctx: &egui::Context) {
-    // 尝试从 Windows 系统目录加载微软雅黑字体以支持中文显示
-    let font_path = "C:\\Windows\\Fonts\\msyh.ttc";
-    if let Ok(font_data) = std::fs::read(font_path) {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "msyh".to_owned(),
-            egui::FontData::from_owned(font_data),
-        );
-        fonts.families.entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, "msyh".to_owned());
-        fonts.families.entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "msyh".to_owned());
-        ctx.set_fonts(fonts);
+    // 寻找系统中的中文字体以支持多平台（Windows / macOS / Linux）中文显示
+    let font_paths = [
+        // Windows
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        // macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        // Linux
+        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/NotoSansCJK.ttc",
+    ];
+
+    for path in &font_paths {
+        if let Ok(font_data) = std::fs::read(path) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "custom_chinese".to_owned(),
+                egui::FontData::from_owned(font_data),
+            );
+            fonts.families.entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "custom_chinese".to_owned());
+            fonts.families.entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, "custom_chinese".to_owned());
+            ctx.set_fonts(fonts);
+            break;
+        }
     }
 
     let mut style = (*ctx.style()).clone();

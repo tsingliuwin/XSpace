@@ -33,6 +33,7 @@ impl PartialOrd for FileInfo {
 
 // 硬盘选择信息
 pub struct DiskInfo {
+    pub name: String,
     pub mount_point: String,
     pub is_selected: bool,
 }
