@@ -8,7 +8,7 @@ use sysinfo::Disks;
 use jwalk::WalkDirGeneric;
 
 use crate::types::{FileInfo, DiskInfo, ScanConfig, ScanMessage, ScanMode};
-use crate::utils::{format_size, open_in_explorer, validate_query};
+use crate::utils::{format_size, reveal_in_file_manager, validate_query, should_skip_path};
 use crate::scanner::{FileSizeState, get_dir_stats};
 
 // App 主状态
@@ -177,6 +177,11 @@ impl SpaceProbeApp {
             config_clone.selected_roots.into_par_iter().for_each(|root| {
                 let root_path = root.clone();
                 let walk = WalkDirGeneric::<FileSizeState>::new(&root)
+                    // 串行遍历：jwalk 默认用 rayon 并行预读，消费端 next() 会自旋等待
+                    // 按序排列的预读条目而忽略取消标志，导致"跑深后无法即时停止"。
+                    // 串行模式下每读一个条目都会被下面的 cancel 检查命中，break 立即生效。
+                    // 多盘并行仍由外层 into_par_iter().for_each 保证。
+                    .parallelism(jwalk::Parallelism::Serial)
                     .process_read_dir({
                         let cancel = cancel_inner.clone();
                         let config = config_inner.clone();
@@ -188,34 +193,46 @@ impl SpaceProbeApp {
                             }
 
                             // 过滤不需要扫描的系统目录或重复挂载目录
-                            children.retain(|entry_result| {
-                                if let Ok(entry) = entry_result {
-                                    let path = entry.path();
-                                    
-                                    // 1. 过滤设备文件目录
-                                    if path.starts_with("/dev") {
-                                        return false;
-                                    }
-                                    
-                                    // 2. 在 macOS / Linux 从 "/" 根路径扫描时，过滤掉其他外部挂载卷与内部重定向卷
-                                    #[cfg(unix)]
-                                    if root_path == "/" {
-                                        if path.starts_with("/Volumes") || path.starts_with("/System/Volumes") {
-                                            return false;
-                                        }
-                                        if path.starts_with("/proc") || path.starts_with("/sys") || path.starts_with("/run") || path.starts_with("/mnt") || path.starts_with("/media") {
-                                            return false;
-                                        }
-                                    }
+                            // 注意：巨型目录下 children 可能有百万级条目，不能让整个 retain
+                            // 长时间不检查 cancel。这里改成手动 retain，每隔 4096 个检查一次取消。
+                            let mut write_idx = 0;
+                            for read_idx in 0..children.len() {
+                                if read_idx & 0xFFF == 0 && cancel.load(AtomicOrdering::Relaxed) {
+                                    // 已取消：直接放弃整个目录的后续处理
+                                    children.clear();
+                                    return;
                                 }
-                                true
-                            });
+                                // 取出 read_idx 处的条目，若保留则放回 write_idx
+                                // （手动 swap_remove 行为不安全，用 swap 保持顺序）
+                                // 注意：should_skip_path 返回 true 表示"应跳过"，需取反得到 keep。
+                                let keep = {
+                                    let entry_result = &children[read_idx];
+                                    if let Ok(entry) = entry_result {
+                                        !should_skip_path(&entry.path(), &root_path)
+                                    } else {
+                                        true
+                                    }
+                                };
+                                if keep {
+                                    if write_idx != read_idx {
+                                        children.swap(write_idx, read_idx);
+                                    }
+                                    write_idx += 1;
+                                }
+                            }
+                            children.truncate(write_idx);
 
-                            for entry_result in children.iter_mut() {
-                                if let Ok(entry) = entry_result {
-                                    if !entry.file_type.is_dir() {
-                                        // 仅在大文件模式下并发预读大小以提高速度
-                                        if config.scan_mode == ScanMode::BigFiles {
+                            // 仅在大文件模式下预读大小以提高速度。
+                            // 巨型目录下逐个 metadata() 系统调用会很久，必须每条都检查取消。
+                            if config.scan_mode == ScanMode::BigFiles {
+                                for entry_result in children.iter_mut() {
+                                    if cancel.load(AtomicOrdering::Relaxed) {
+                                        // 取消：放弃剩余文件的预读，直接返回，
+                                        // 让 walk 主循环的下一次 cancel 检查命中并 break。
+                                        break;
+                                    }
+                                    if let Ok(entry) = entry_result {
+                                        if !entry.file_type.is_dir() {
                                             if let Ok(metadata) = entry.metadata() {
                                                 entry.client_state = metadata.len();
                                             }
@@ -278,7 +295,7 @@ impl SpaceProbeApp {
                         }
                         ScanMode::CustomDirName => {
                             if is_dir && file_name.contains(&config_inner.query) {
-                                let (dir_size, file_count) = get_dir_stats(&entry.path());
+                                let (dir_size, file_count) = get_dir_stats(&entry.path(), &cancel_inner);
                                 entry_size = dir_size;
                                 entry_file_count = Some(file_count);
                                 matched = true;
@@ -333,6 +350,13 @@ impl eframe::App for SpaceProbeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 1. 处理后台线程发来的消息
         let mut finished_msg = None;
+
+        // 扫描期间定时重绘：保证持续消费消息、及时响应"停止"。
+        // egui 是事件驱动的，若只依赖后台线程的 request_repaint，停止后线程快速
+        // break 不再发 Progress，UI 会静止，导致 Finished 不被处理、停止看似无效。
+        if self.is_scanning {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
         if self.is_scanning {
             if let Some(rx) = &self.rx {
                 while let Ok(msg) = rx.try_recv() {
@@ -343,7 +367,9 @@ impl eframe::App for SpaceProbeApp {
                             self.current_path = current_path;
                         }
                         ScanMessage::BigFile(file) => {
-                            let idx = match self.big_files.binary_search_by(|probe| file.size.cmp(&probe.size).reverse()) {
+                            // 降序插入（大到小）：value.cmp(probe) 让二分查找定位到降序位置，
+                            // index 0 即最大项；truncate 保留前 top_n 个即最大的 N 个。
+                            let idx = match self.big_files.binary_search_by(|probe| file.size.cmp(&probe.size)) {
                                 Ok(idx) => idx,
                                 Err(idx) => idx,
                             };
@@ -528,6 +554,7 @@ impl eframe::App for SpaceProbeApp {
                                         .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
                                     if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
                                         self.stop_scan();
+                                        ctx.request_repaint(); // 立即重绘，给出即时反馈
                                     }
                                 } else {
                                     let has_selection = self.disks.iter().any(|d| d.is_selected);
@@ -778,11 +805,11 @@ impl eframe::App for SpaceProbeApp {
                                             };
                                             ui.add_sized([path_width, 20.0], egui::Label::new(display_path).selectable(true).truncate(true));
 
-                                            // 打开所在目录按钮 (靠右对齐)
+                                            // 定位文件/目录按钮 (靠右对齐)
                                             ui.allocate_ui([col4_width, 22.0].into(), |ui| {
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.add_sized([26.0, 22.0], egui::Button::new("📂")).clicked() {
-                                                        open_in_explorer(&file.path);
+                                                        reveal_in_file_manager(&file.path);
                                                     }
                                                 });
                                             });
