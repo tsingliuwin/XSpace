@@ -323,7 +323,7 @@ impl eframe::App for SpaceProbeApp {
                 
                 // 控制按钮
                 if self.is_scanning {
-                    let btn = egui::Button::new("⏹ 停止扫描")
+                    let btn = egui::Button::new(egui::RichText::new("⏹ 停止扫描").color(egui::Color32::WHITE))
                         .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
                     if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
                         self.stop_scan();
@@ -331,8 +331,8 @@ impl eframe::App for SpaceProbeApp {
                 } else {
                     let has_selection = self.disks.iter().any(|d| d.is_selected);
                     ui.add_enabled_ui(has_selection, |ui| {
-                        let btn = egui::Button::new("▶ 开始全盘扫描")
-                            .fill(egui::Color32::from_rgb(0x7C, 0x3A, 0xED));
+                        let btn = egui::Button::new(egui::RichText::new("▶ 开始全盘扫描").color(egui::Color32::WHITE))
+                            .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB)); // 优雅的深蓝色
                         if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
                             self.start_scan(ctx.clone());
                         }
@@ -345,7 +345,7 @@ impl eframe::App for SpaceProbeApp {
                 ui.strong("状态概要");
                 ui.add_space(6.0);
                 egui::Frame::none()
-                    .fill(egui::Color32::from_rgb(0x1B, 0x1C, 0x24)) // 更加精致的卡片底色
+                    .fill(ui.visuals().window_fill) // 使用动态容器背景色，完美匹配亮色主题
                     .rounding(8.0)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
@@ -475,7 +475,7 @@ impl eframe::App for SpaceProbeApp {
 
                                     // 大小高亮
                                     let size_str = format_size(file.size);
-                                    ui.label(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x06, 0xB6, 0xD4)).strong());
+                                    ui.label(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x02, 0x84, 0xC7)).strong());
 
                                     // 路径（可选择复制，超长截断，左对齐）
                                     ui.allocate_ui(egui::vec2(path_width, 20.0), |ui| {
@@ -552,21 +552,21 @@ fn configure_custom_style(ctx: &egui::Context) {
     style.visuals.widgets.hovered.rounding = 6.0.into();
     style.visuals.widgets.active.rounding = 6.0.into();
     
-    // 设置高贵雅致的深蓝色/灰黑色配色
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(0x0F, 0x10, 0x15); // 主面板深底
-    visuals.window_fill = egui::Color32::from_rgb(0x18, 0x19, 0x20); // 浮窗底色
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0x18, 0x19, 0x20);
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0x22, 0x23, 0x2e); // 组件未选中填充
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x2d, 0x2f, 0x3d);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0x3a, 0x3c, 0x4e);
+    // 设置高贵雅致的浅色系配色
+    let mut visuals = egui::Visuals::light();
+    visuals.panel_fill = egui::Color32::from_rgb(0xF3, 0xF4, 0xF6); // 主面板浅灰底色
+    visuals.window_fill = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF); // 容器卡片纯白底色
+    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0xF9, 0xFA, 0xFB);
+    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xE5, 0xE7, 0xEB); // 组件未选中填充
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0xD1, 0xD5, 0xDB);
+    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0x9C, 0xA3, 0xAF);
     
     // 文字颜色微调
-    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0xe2, 0xe8, 0xf0); 
-    visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(0xcb, 0xd5, 0xe1);
+    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0x1F, 0x29, 0x37); // 深色文字
+    visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(0x37, 0x41, 0x51);
     
-    // 主题高亮强调色（紫罗兰色）
-    visuals.selection.bg_fill = egui::Color32::from_rgb(0x7C, 0x3A, 0xED);
+    // 主题高亮强调色
+    visuals.selection.bg_fill = egui::Color32::from_rgb(0xDB, 0xEA, 0xFE); // 浅蓝色选择背景
     
     style.visuals = visuals;
     ctx.set_style(style);
@@ -578,7 +578,7 @@ fn main() -> Result<(), eframe::Error> {
             .with_inner_size([960.0, 620.0])
             .with_min_inner_size([750.0, 520.0])
             .with_title("🔍 全盘大文件空间探针 (SpaceProbe)"),
-        default_theme: eframe::Theme::Dark,
+        default_theme: eframe::Theme::Light,
         ..Default::default()
     };
     
