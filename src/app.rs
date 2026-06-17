@@ -379,14 +379,15 @@ impl eframe::App for SpaceProbeApp {
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.add_space(10.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
                         ui.horizontal(|ui| {
                             ui.heading("🔍 XSpace");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.label(egui::RichText::new("极速空间探测器").weak().size(10.0));
                             });
                         });
-                        
-                        ui.add_space(12.0);
+
+                        ui.add_space(4.0);
                         
                         // 1. 分区选择卡片
                         egui::Frame::none()
@@ -395,6 +396,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 10.0;
                                 ui.strong("💾 扫描分区");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -407,8 +409,6 @@ impl eframe::App for SpaceProbeApp {
                                     });
                                 });
                             });
-                        
-                        ui.add_space(10.0);
 
                         // 2. 参数配置卡片
                         egui::Frame::none()
@@ -417,6 +417,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 10.0;
                                 ui.strong("⚙️ 参数配置");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -510,8 +511,6 @@ impl eframe::App for SpaceProbeApp {
                                 }
                             });
 
-                        ui.add_space(10.0);
-                        
                         // 3. 控制操作卡片
                         egui::Frame::none()
                             .fill(ui.visuals().window_fill)
@@ -519,6 +518,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 10.0;
                                 ui.strong("🎯 扫描控制");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -564,8 +564,6 @@ impl eframe::App for SpaceProbeApp {
                                     ui.label(egui::RichText::new(format!("⚠️ {}", err)).color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(11.0));
                                 }
                             });
-                        
-                        ui.add_space(10.0);
 
                         // 4. 当前状态卡片
                         egui::Frame::none()
@@ -574,6 +572,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(8.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 10.0;
 
                                 let (status_text, status_color) = if self.is_scanning {
                                     ("⚡ 极速扫描中...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
