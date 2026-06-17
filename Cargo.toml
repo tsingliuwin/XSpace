@@ -1,0 +1,9 @@
+[package]
+name = "demorust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jwalk = "0.8.1"
+sysinfo = "0.38.4"
+walkdir = "2.5.0"
