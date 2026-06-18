@@ -82,7 +82,7 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
-            .with_min_inner_size([750.0, 520.0])
+            .with_min_inner_size([750.0, 620.0])
             .with_title("🔍 XSpace - 极速磁盘空间探测器"),
         default_theme: eframe::Theme::Light,
         ..Default::default()

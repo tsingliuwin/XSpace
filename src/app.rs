@@ -11,6 +11,15 @@ use crate::types::{FileInfo, DiskInfo, ScanConfig, ScanMessage, ScanMode};
 use crate::utils::{format_size, reveal_in_file_manager, validate_query, should_skip_path};
 use crate::scanner::{FileSizeState, get_dir_stats};
 
+// 在 Grid 单元格内右对齐显示富文本（用于数字列，便于按位对齐扫读）
+fn right_aligned_label(ui: &mut egui::Ui, text: egui::RichText, width: f32) {
+    ui.allocate_ui([width, 20.0].into(), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(text);
+        });
+    });
+}
+
 // App 主状态
 pub struct SpaceProbeApp {
     pub disks: Vec<DiskInfo>,
@@ -401,11 +410,9 @@ impl eframe::App for SpaceProbeApp {
             .resizable(false)
             .default_width(260.0)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.add_space(10.0);
-                        ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.heading("🔍 XSpace");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -422,7 +429,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 10.0;
+                                ui.spacing_mut().item_spacing.y = 8.0;
                                 ui.strong("💾 扫描分区");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -443,7 +450,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 10.0;
+                                ui.spacing_mut().item_spacing.y = 8.0;
                                 ui.strong("⚙️ 参数配置");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -458,7 +465,7 @@ impl eframe::App for SpaceProbeApp {
                                             .integer()
                                             .show_value(false)
                                         );
-                                        ui.add(egui::DragValue::new(&mut self.top_n).clamp_range(5..=10000));
+                                        ui.add(egui::DragValue::new(&mut self.top_n).clamp_range(5..=1000));
                                     });
                                 });
                                 
@@ -503,7 +510,7 @@ impl eframe::App for SpaceProbeApp {
                                                     .show_value(false)
                                                 );
                                                 ui.add(egui::DragValue::new(&mut self.min_size_mb)
-                                                    .clamp_range(1.0..=102400.0)
+                                                    .clamp_range(1.0..=10240.0)
                                                     .suffix(" MB")
                                                 );
                                             });
@@ -516,6 +523,8 @@ impl eframe::App for SpaceProbeApp {
                                         ui.horizontal(|ui| {
                                             ui.label("文件名：");
                                             ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                                // 失焦时也保留可见边框，避免输入框"隐身"
+                                                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xC4, 0xCA, 0xD4));
                                                 let w = ui.available_width();
                                                 if ui.add(egui::TextEdit::singleline(&mut self.file_query).desired_width(w)).changed() {
                                                     self.validation_error = None;
@@ -527,6 +536,8 @@ impl eframe::App for SpaceProbeApp {
                                         ui.horizontal(|ui| {
                                             ui.label("目录名：");
                                             ui.add_enabled_ui(!self.is_scanning, |ui| {
+                                                // 失焦时也保留可见边框，避免输入框"隐身"
+                                                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0xC4, 0xCA, 0xD4));
                                                 let w = ui.available_width();
                                                 if ui.add(egui::TextEdit::singleline(&mut self.dir_query).desired_width(w)).changed() {
                                                     self.validation_error = None;
@@ -544,7 +555,7 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 10.0;
+                                ui.spacing_mut().item_spacing.y = 8.0;
                                 ui.strong("🎯 扫描控制");
                                 ui.add_space(4.0);
                                 ui.separator();
@@ -592,14 +603,20 @@ impl eframe::App for SpaceProbeApp {
                                 }
                             });
 
+                        // 利用剩余垂直空间，把"当前状态"卡片贴近面板底部，
+                        // 充分填充面板高度，并避免出现滚动条。
+                        let status_reserve = 190.0;
+                        let gap = (ui.available_height() - status_reserve).max(0.0);
+                        ui.add_space(gap);
+
                         // 4. 当前状态卡片
                         egui::Frame::none()
                             .fill(ui.visuals().window_fill)
                             .rounding(8.0)
-                            .inner_margin(8.0)
+                            .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 10.0;
+                                ui.spacing_mut().item_spacing.y = 8.0;
 
                                 let (status_text, status_color) = if self.is_scanning {
                                     ("⚡ 极速扫描中...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
@@ -686,7 +703,11 @@ impl eframe::App for SpaceProbeApp {
                         ui.add_space(6.0);
 
                         if self.is_scanning {
-                            ui.add(egui::ProgressBar::new(0.5)
+                            // 扫描总量未知，无法显示真实百分比；让进度在 0.08..0.9 之间平滑往返，
+                            // 营造"持续加载"的观感，避免固定 0.5 看起来像"卡在 50%"。
+                            let t = ui.ctx().input(|i| i.time) as f32;
+                            let frac = 0.08 + 0.82 * 0.5 * (1.0 - (t * 1.5).cos());
+                            ui.add(egui::ProgressBar::new(frac)
                                 .animate(true)
                                 .text(format!("XSpace 正在并发极速扫描中 (已检索出目标项: {})...", self.big_files.len()))
                             );
@@ -759,10 +780,10 @@ impl eframe::App for SpaceProbeApp {
                                     .striped(true)
                                     .show(ui, |ui| {
                                         // 表格头部
-                                        ui.add_sized([col0_width, 20.0], egui::Label::new(egui::RichText::new("排名").strong()));
-                                        ui.add_sized([col1_width, 20.0], egui::Label::new(egui::RichText::new("占用大小").strong()));
+                                        right_aligned_label(ui, egui::RichText::new("排名").strong(), col0_width);
+                                        right_aligned_label(ui, egui::RichText::new("占用大小").strong(), col1_width);
                                         if is_dir_mode {
-                                            ui.add_sized([col2_width, 20.0], egui::Label::new(egui::RichText::new("内含文件数").strong()));
+                                            right_aligned_label(ui, egui::RichText::new("内含文件数").strong(), col2_width);
                                         }
                                         ui.add_sized([path_width, 20.0], egui::Label::new(egui::RichText::new("完整路径").strong()));
                                         
@@ -782,11 +803,11 @@ impl eframe::App for SpaceProbeApp {
                                             } else {
                                                 ui.visuals().widgets.noninteractive.fg_stroke.color
                                             };
-                                            ui.add_sized([col0_width, 20.0], egui::Label::new(egui::RichText::new(rank_text).color(rank_color).strong()));
+                                            right_aligned_label(ui, egui::RichText::new(rank_text).color(rank_color).strong(), col0_width);
 
                                             // 大小高亮
                                             let size_str = format_size(file.size);
-                                            ui.add_sized([col1_width, 20.0], egui::Label::new(egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x02, 0x84, 0xC7)).strong()));
+                                            right_aligned_label(ui, egui::RichText::new(size_str).color(egui::Color32::from_rgb(0x02, 0x84, 0xC7)).strong(), col1_width);
 
                                             // 文件数高亮 (仅目录模式)
                                             if is_dir_mode {
@@ -794,7 +815,7 @@ impl eframe::App for SpaceProbeApp {
                                                     Some(count) => format!("{} 个", count),
                                                     None => "-".to_string(),
                                                 };
-                                                ui.add_sized([col2_width, 20.0], egui::Label::new(egui::RichText::new(count_str).color(egui::Color32::from_rgb(0x10, 0xB9, 0x81)).strong()));
+                                                right_aligned_label(ui, egui::RichText::new(count_str).color(egui::Color32::from_rgb(0x10, 0xB9, 0x81)).strong(), col2_width);
                                             }
 
                                             // 路径（可选择复制，超长截断，左对齐）
