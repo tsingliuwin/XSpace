@@ -129,3 +129,26 @@
   --vp-custom-block-tip-code-bg: var(--vp-c-brand-soft);
 }
 
+/**
+ * Home: 界面截图展示
+ * -------------------------------------------------------------------------- */
+.home-screenshot {
+  max-width: 960px;
+  margin: 56px auto 0;
+  padding: 0 16px;
+  text-align: center;
+}
+.home-screenshot img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--vp-c-divider);
+}
+.home-screenshot .caption {
+  margin-top: 14px;
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+}
+

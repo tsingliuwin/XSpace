@@ -45,3 +45,8 @@ features:
     title: 轻量原生
     details: 纯 Rust + egui，单文件约 5MB，零额外运行时依赖，macOS / Windows / Linux 原生运行。
 ---
+
+<div class="home-screenshot">
+  <img src="/xspace.png" alt="XSpace 界面预览" />
+  <div class="caption">XSpace 主界面 · 极速磁盘空间探测器</div>
+</div>
