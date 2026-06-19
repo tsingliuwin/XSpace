@@ -791,56 +791,45 @@ impl eframe::App for SpaceProbeApp {
                                 }
                             });
 
-                        // 3. 控制操作卡片
-                        egui::Frame::none()
-                            .fill(ui.visuals().window_fill)
-                            .rounding(8.0)
-                            .inner_margin(10.0)
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 8.0;
-                                ui.strong("🎯 扫描控制");
-                                ui.add_space(4.0);
-                                ui.separator();
-                                ui.add_space(8.0);
-                                if self.is_scanning {
-                                    let btn = egui::Button::new(egui::RichText::new("⏹ 停止").color(egui::Color32::WHITE).strong())
-                                        .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
-                                    if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
-                                        self.stop_scan();
-                                        ctx.request_repaint(); // 立即重绘，给出即时反馈
-                                    }
-                                } else {
-                                    let has_selection = self.disks.iter().any(|d| d.is_selected);
-                                    ui.add_enabled_ui(has_selection, |ui| {
-                                        let btn = egui::Button::new(egui::RichText::new("▶ 开始扫描").color(egui::Color32::WHITE).strong())
-                                            .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB));
-                                        if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
-                                            let mut valid = true;
-                                            self.validation_error = None;
-                                            // Name* 预设需校验关键字
-                                            if matches!(self.preset, ScanPreset::FindFiles | ScanPreset::FindDirs) {
-                                                if let Err(err) = validate_query(&self.query) {
-                                                    self.validation_error = Some(err);
-                                                    valid = false;
-                                                }
-                                            }
-                                            if valid {
-                                                self.start_scan(ctx.clone());
-                                            }
+                        // 3. 扫描按钮（独立放置，不加卡片）
+                        ui.add_space(8.0);
+                        if self.is_scanning {
+                            let btn = egui::Button::new(egui::RichText::new("⏹ 停止").color(egui::Color32::WHITE).strong())
+                                .fill(egui::Color32::from_rgb(0xef, 0x44, 0x44));
+                            if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
+                                self.stop_scan();
+                                ctx.request_repaint(); // 立即重绘，给出即时反馈
+                            }
+                        } else {
+                            let has_selection = self.disks.iter().any(|d| d.is_selected);
+                            ui.add_enabled_ui(has_selection, |ui| {
+                                let btn = egui::Button::new(egui::RichText::new("▶ 开始扫描").color(egui::Color32::WHITE).strong())
+                                    .fill(egui::Color32::from_rgb(0x25, 0x63, 0xEB));
+                                if ui.add_sized([ui.available_width(), 40.0], btn).clicked() {
+                                    let mut valid = true;
+                                    self.validation_error = None;
+                                    // Name* 预设需校验关键字
+                                    if matches!(self.preset, ScanPreset::FindFiles | ScanPreset::FindDirs) {
+                                        if let Err(err) = validate_query(&self.query) {
+                                            self.validation_error = Some(err);
+                                            valid = false;
                                         }
-                                    });
-                                }
-
-                                if let Some(err) = &self.validation_error {
-                                    ui.add_space(6.0);
-                                    ui.label(egui::RichText::new(format!("⚠️ {}", err)).color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(11.0));
+                                    }
+                                    if valid {
+                                        self.start_scan(ctx.clone());
+                                    }
                                 }
                             });
+                        }
+
+                        if let Some(err) = &self.validation_error {
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new(format!("⚠️ {}", err)).color(egui::Color32::from_rgb(0xef, 0x44, 0x44)).size(11.0));
+                        }
 
                         // 利用剩余垂直空间，把"当前状态"卡片贴近面板底部，
                         // 充分填充面板高度，并避免出现滚动条。
-                        let status_reserve = 190.0;
+                        let status_reserve = 110.0;
                         let gap = (ui.available_height() - status_reserve).max(0.0);
                         ui.add_space(gap);
 
@@ -851,56 +840,68 @@ impl eframe::App for SpaceProbeApp {
                             .inner_margin(10.0)
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.spacing_mut().item_spacing.y = 8.0;
 
                                 let (status_text, status_color) = if self.is_scanning {
-                                    ("⚡ 极速扫描中...", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
+                                    ("⚡ 扫描中", egui::Color32::from_rgb(0x06, 0xB6, 0xD4))
                                 } else if self.scan_duration.is_some() {
                                     if self.was_cancelled {
-                                        ("⏹ 扫描已中止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b))
+                                        ("⏹ 已中止", egui::Color32::from_rgb(0xf5, 0x9e, 0x0b))
                                     } else {
-                                        ("✨ 扫描完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81))
+                                        ("✨ 完成", egui::Color32::from_rgb(0x10, 0xB9, 0x81))
                                     }
                                 } else {
                                     ("💤 就绪", egui::Color32::from_rgb(0x94, 0xA3, 0xB8))
                                 };
+                                let dur_str = self
+                                    .scan_duration
+                                    .map(|d| format!("{:.2}s", d.as_secs_f32()))
+                                    .unwrap_or_else(|| "—".to_string());
 
-                                ui.horizontal(|ui| {
-                                    ui.label("当前状态:");
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(status_text).color(status_color).strong());
-                                    });
-                                });
-
-                                ui.add_space(4.0);
-                                ui.separator();
-                                ui.add_space(4.0);
-
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("文件数量:").weak());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(format!("{}", self.scanned_files)).strong());
-                                    });
-                                });
-
-                                ui.add_space(2.0);
-
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("目录数量:").weak());
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(egui::RichText::new(format!("{}", self.scanned_dirs)).strong());
-                                    });
-                                });
-
-                                if let Some(dur) = self.scan_duration {
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("总共耗时:").weak());
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.label(egui::RichText::new(format!("{:.2} 秒", dur.as_secs_f32())).color(egui::Color32::from_rgb(0x38, 0xBD, 0xF8)).strong());
+                                // 2 行 2 列：文件数 / 目录数 ，耗时 / 状态
+                                // 数值放进定宽区域，避免位数变化时撑动列宽导致抖动
+                                let val_w = 62.0;
+                                egui::Grid::new("status_grid")
+                                    .num_columns(2)
+                                    .spacing([8.0, 8.0])
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("文件数:").weak());
+                                            right_aligned_label(
+                                                ui,
+                                                egui::RichText::new(format!("{}", self.scanned_files)).strong(),
+                                                val_w,
+                                            );
                                         });
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("目录数:").weak());
+                                            right_aligned_label(
+                                                ui,
+                                                egui::RichText::new(format!("{}", self.scanned_dirs)).strong(),
+                                                val_w,
+                                            );
+                                        });
+                                        ui.end_row();
+
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("耗时:").weak());
+                                            right_aligned_label(
+                                                ui,
+                                                egui::RichText::new(dur_str)
+                                                    .color(egui::Color32::from_rgb(0x38, 0xBD, 0xF8))
+                                                    .strong(),
+                                                val_w,
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new("状态:").weak());
+                                            right_aligned_label(
+                                                ui,
+                                                egui::RichText::new(status_text).color(status_color).strong(),
+                                                val_w,
+                                            );
+                                        });
+                                        ui.end_row();
                                     });
-                                }
                             });
                     });
             });

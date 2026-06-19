@@ -901,16 +901,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
-name = "demorust"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "jwalk",
- "rayon",
- "sysinfo",
-]
-
-[[package]]
 name = "derivative"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4445,6 +4435,16 @@ name = "xml-rs"
 version = "0.8.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
+
+[[package]]
+name = "xspace"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "jwalk",
+ "rayon",
+ "sysinfo",
+]
 
 [[package]]
 name = "yoke"
