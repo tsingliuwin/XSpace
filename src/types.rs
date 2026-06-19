@@ -1,16 +1,59 @@
-use std::cmp::Ordering;
 use std::time::Duration;
 
-// 扫描模式
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum ScanMode {
-    BigFiles,       // 找大文件
-    EmptyFiles,     // 找空文件
-    CustomFileName, // 找指定文件
-    CustomDirName,  // 找指定目录
+// ===== 扫描正交维度（轴） =====
+
+/// 扫描目标：文件 / 目录
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Target {
+    File,
+    Directory,
 }
 
-// 记录大文件或目录信息
+/// 过滤维度
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Filter {
+    Largest,       // 大于等于阈值（仅文件）
+    Empty,         // 空文件 / 空目录
+    NameContains,  // 文件名/目录名包含关键字
+    NameExact,     // 文件名/目录名精确匹配
+}
+
+/// 目录聚合维度（仅 Directory 有意义；文件类恒为 None）
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Aggregate {
+    None,
+    Size,
+    FileCount,
+    SizeAndCount,
+}
+
+/// 结果排序维度
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum SortBy {
+    Size,
+    FileCount,
+    Path,
+}
+
+/// 结果数量上限
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Limit {
+    TopN(usize),
+    All,
+}
+
+// ===== 用户侧预设（驱动下拉框） =====
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum ScanPreset {
+    BigFiles,   // File + Largest + Size + TopN
+    EmptyFiles, // File + Empty + Size + All
+    EmptyDirs,  // Directory + Empty + Path + All
+    FindFiles,  // File + (Contains|Exact) + Size + All
+    FindDirs,   // Directory + (Contains|Exact) + Aggregate + Sort + All/TopN
+}
+
+// 找到的文件/目录信息
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileInfo {
     pub size: u64,
@@ -18,18 +61,8 @@ pub struct FileInfo {
     pub is_dir: bool,
     pub file_count: Option<usize>,
 }
-
-// 排序规则：按大小对比（最大堆）
-impl Ord for FileInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.size.cmp(&other.size)
-    }
-}
-impl PartialOrd for FileInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
+// 注意：移除了 Ord/PartialOrd。多键排序（按 size / file_count / path）时单一全序会产生
+// 歧义，统一改由调用方按 SortBy 提供显式闭包比较器（见 app.rs 二分插入逻辑）。
 
 // 硬盘选择信息
 pub struct DiskInfo {
@@ -38,13 +71,17 @@ pub struct DiskInfo {
     pub is_selected: bool,
 }
 
-// 扫描参数配置
+// 扫描参数配置（轴驱动）
 #[derive(Clone, Debug)]
 pub struct ScanConfig {
     pub selected_roots: Vec<String>,
-    pub scan_mode: ScanMode,
-    pub min_size_bytes: u64,
-    pub query: String,
+    pub target: Target,
+    pub filter: Filter,
+    pub aggregate: Aggregate, // 目录类查询才 != None
+    pub sort_by: SortBy,
+    pub limit: Limit,
+    pub min_size_bytes: u64, // 仅 Largest 用
+    pub query: String,       // 仅 Name* 用，已 trim+lowercase
 }
 
 // 线程间通信消息
