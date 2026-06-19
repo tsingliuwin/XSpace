@@ -58,6 +58,23 @@ pub fn format_size(size: u64) -> String {
     }
 }
 
+// 获取系统"下载"目录（用于导出结果文件，无需引入额外依赖）
+pub fn downloads_dir() -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return Some(std::path::PathBuf::from(home).join("Downloads"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            return Some(std::path::PathBuf::from(profile).join("Downloads"));
+        }
+    }
+    None
+}
+
 // 在系统的文件管理器中定位并选中该文件/目录
 #[cfg(target_os = "macos")]
 pub fn reveal_in_file_manager(path: &str) {
@@ -65,8 +82,7 @@ pub fn reveal_in_file_manager(path: &str) {
     let _ = std::process::Command::new("open")
         .arg("-R")
         .arg(path)
-        .spawn();
-}
+        .spawn();}
 
 #[cfg(target_os = "windows")]
 pub fn reveal_in_file_manager(path: &str) {

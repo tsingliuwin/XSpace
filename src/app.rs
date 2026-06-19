@@ -13,7 +13,7 @@ use crate::types::{
     FileInfo, DiskInfo, ScanConfig, ScanMessage,
     ScanPreset, Target, Filter, Aggregate, SortBy, Limit,
 };
-use crate::utils::{format_size, reveal_in_file_manager, validate_query, should_skip_path};
+use crate::utils::{format_size, reveal_in_file_manager, validate_query, should_skip_path, downloads_dir};
 use crate::scanner::FileSizeState;
 
 // 在 Grid 单元格内右对齐显示富文本（用于数字列，便于按位对齐扫读）
@@ -39,6 +39,65 @@ fn send_file(
         is_dir,
         file_count,
     }));
+}
+
+// 把结果清单导出为 TXT（保存到系统下载目录）。返回写入路径，便于在文件管理器中定位。
+fn export_results_txt(
+    title: &str,
+    files: &[FileInfo],
+    show_size: bool,
+    show_count: bool,
+) -> Option<std::path::PathBuf> {
+    let dir = downloads_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // 文件名里只保留字母数字/下划线，避免非法字符
+    let safe: String = title
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    let path = dir.join(format!("xspace_{}_{}.txt", safe, secs));
+
+    let mut out = String::new();
+    out.push_str("XSpace 检索结果清单\n");
+    out.push_str(&format!("分析模式: {}\n", title));
+    out.push_str(&format!("条目数量: {}\n", files.len()));
+    out.push_str(&format!("导出时间(unix秒): {}\n\n", secs));
+
+    if show_count {
+        out.push_str("排名\t大小\t文件数\t路径\n");
+    } else if show_size {
+        out.push_str("排名\t大小\t路径\n");
+    } else {
+        out.push_str("排名\t路径\n");
+    }
+
+    for (i, f) in files.iter().enumerate() {
+        let rank = i + 1;
+        if show_count {
+            let count = match f.file_count {
+                Some(c) => format!("{} 个", c),
+                None => "-".to_string(),
+            };
+            out.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                rank,
+                format_size(f.size),
+                count,
+                f.path
+            ));
+        } else if show_size {
+            out.push_str(&format!("{}\t{}\t{}\n", rank, format_size(f.size), f.path));
+        } else {
+            out.push_str(&format!("{}\t{}\n", rank, f.path));
+        }
+    }
+
+    std::fs::write(&path, out).ok()?;
+    Some(path)
 }
 
 // FindDirs 的"统计维度"子选项（仅 UI 用，构建 ScanConfig 时映射到 Aggregate）
@@ -1062,7 +1121,35 @@ impl eframe::App for SpaceProbeApp {
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.strong("📋 检索详情清单");
+                        // 标题 + 工具栏（复制全部 / 下载TXT）
+                        ui.horizontal(|ui| {
+                            ui.strong("📋 检索详情清单");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new("⬇ 下载TXT")).clicked() {
+                                    let title = match self.preset {
+                                        ScanPreset::BigFiles => "大文件",
+                                        ScanPreset::EmptyFiles => "空文件",
+                                        ScanPreset::EmptyDirs => "空目录",
+                                        ScanPreset::FindFiles => "搜文件",
+                                        ScanPreset::FindDirs => "搜目录",
+                                    };
+                                    if let Some(path) =
+                                        export_results_txt(title, &self.big_files, show_size, show_count)
+                                    {
+                                        reveal_in_file_manager(&path.display().to_string());
+                                    }
+                                }
+                                if ui.add(egui::Button::new("📋 复制全部")).clicked() {
+                                    let text = self
+                                        .big_files
+                                        .iter()
+                                        .map(|f| f.path.clone())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    ui.ctx().copy_text(text);
+                                }
+                            });
+                        });
                         ui.add_space(4.0);
                         ui.separator();
                         ui.add_space(8.0);
@@ -1074,7 +1161,7 @@ impl eframe::App for SpaceProbeApp {
                                 let col0_width = 40.0; // 排名
                                 let col_size_width = 85.0; // 占用大小
                                 let col_count_width = 90.0; // 内含文件数
-                                let col_action_width = 40.0; // 操作
+                                let col_action_width = 68.0; // 操作（复制 + 定位）
                                 let spacing = 12.0;
                                 let num_spacings = (num_columns as f32) - 1.0;
                                 let used = col0_width
@@ -1141,11 +1228,14 @@ impl eframe::App for SpaceProbeApp {
                                             };
                                             ui.add_sized([path_width, 20.0], egui::Label::new(display_path).selectable(true).truncate(true));
 
-                                            // 定位文件/目录按钮 (靠右对齐)
+                                            // 复制路径 + 定位 (靠右对齐)
                                             ui.allocate_ui([col_action_width, 22.0].into(), |ui| {
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     if ui.add_sized([26.0, 22.0], egui::Button::new("📂")).clicked() {
                                                         reveal_in_file_manager(&file.path);
+                                                    }
+                                                    if ui.add_sized([26.0, 22.0], egui::Button::new("📋")).clicked() {
+                                                        ui.ctx().copy_text(file.path.clone());
                                                     }
                                                 });
                                             });
