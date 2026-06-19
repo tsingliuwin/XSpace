@@ -75,6 +75,7 @@ pub struct SpaceProbeApp {
     pub current_path: String,
     pub big_files: Vec<FileInfo>,
     pub scan_duration: Option<Duration>,
+    pub scan_start: Option<Instant>, // 扫描中实时计耗时用；结束/中止时清空
     pub was_cancelled: bool,
 
     // 当前扫描的排序/上限，供 UI 收集逻辑使用（start_scan 时从 config 拷出）
@@ -150,6 +151,7 @@ impl SpaceProbeApp {
             current_path: String::new(),
             big_files: Vec::new(),
             scan_duration: None,
+            scan_start: None,
             was_cancelled: false,
             current_sort_by: SortBy::Size,
             current_limit: Limit::TopN(20),
@@ -238,6 +240,7 @@ impl SpaceProbeApp {
         self.current_path.clear();
         self.big_files.clear();
         self.scan_duration = None;
+        self.scan_start = Some(Instant::now());
         self.was_cancelled = false;
 
         let mut selected_roots: Vec<String> = self.disks.iter()
@@ -585,6 +588,7 @@ impl eframe::App for SpaceProbeApp {
             self.scanned_files = files;
             self.scanned_dirs = dirs;
             self.scan_duration = Some(elapsed);
+            self.scan_start = None;
             self.was_cancelled = was_cancelled;
             self.is_scanning = false;
             self.rx = None;
@@ -613,7 +617,7 @@ impl eframe::App for SpaceProbeApp {
                         ui.horizontal(|ui| {
                             ui.heading("🔍 XSpace");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new("极速空间探测器").weak().size(10.0));
+                                ui.label(egui::RichText::new("极速磁盘空间探测器").weak().size(10.0));
                             });
                         });
 
@@ -852,53 +856,43 @@ impl eframe::App for SpaceProbeApp {
                                 } else {
                                     ("💤 就绪", egui::Color32::from_rgb(0x94, 0xA3, 0xB8))
                                 };
-                                let dur_str = self
-                                    .scan_duration
+                                // 扫描中实时计时；结束后显示最终耗时
+                                let dur = self
+                                    .scan_start
+                                    .map(|s| s.elapsed())
+                                    .or(self.scan_duration);
+                                let dur_str = dur
                                     .map(|d| format!("{:.2}s", d.as_secs_f32()))
                                     .unwrap_or_else(|| "—".to_string());
 
-                                // 2 行 2 列：文件数 / 目录数 ，耗时 / 状态
-                                // 数值放进定宽区域，避免位数变化时撑动列宽导致抖动
-                                let val_w = 62.0;
+                                // 2 行 2 列 Grid：文件数 / 目录数 ，耗时 / 状态。
+                                // 数字用等宽字体，字形宽度统一，计数变化时列宽不重排、不抖动。
                                 egui::Grid::new("status_grid")
                                     .num_columns(2)
                                     .spacing([8.0, 8.0])
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("文件数:").weak());
-                                            right_aligned_label(
-                                                ui,
-                                                egui::RichText::new(format!("{}", self.scanned_files)).strong(),
-                                                val_w,
-                                            );
+                                            ui.label(egui::RichText::new(format!("{}", self.scanned_files)).strong().monospace());
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("目录数:").weak());
-                                            right_aligned_label(
-                                                ui,
-                                                egui::RichText::new(format!("{}", self.scanned_dirs)).strong(),
-                                                val_w,
-                                            );
+                                            ui.label(egui::RichText::new(format!("{}", self.scanned_dirs)).strong().monospace());
                                         });
                                         ui.end_row();
 
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("耗时:").weak());
-                                            right_aligned_label(
-                                                ui,
+                                            ui.label(
                                                 egui::RichText::new(dur_str)
                                                     .color(egui::Color32::from_rgb(0x38, 0xBD, 0xF8))
-                                                    .strong(),
-                                                val_w,
+                                                    .strong()
+                                                    .monospace(),
                                             );
                                         });
                                         ui.horizontal(|ui| {
                                             ui.label(egui::RichText::new("状态:").weak());
-                                            right_aligned_label(
-                                                ui,
-                                                egui::RichText::new(status_text).color(status_color).strong(),
-                                                val_w,
-                                            );
+                                            ui.label(egui::RichText::new(status_text).color(status_color).strong());
                                         });
                                         ui.end_row();
                                     });
@@ -1109,47 +1103,41 @@ impl eframe::App for SpaceProbeApp {
                             });
                     });
             } else {
-                // 欢迎及提示主页面卡片
+                // 欢迎及提示主页面（无卡片框，直接居中展示）
                 ui.vertical_centered(|ui| {
                     ui.add_space(50.0);
-                    egui::Frame::none()
-                        .fill(ui.visuals().window_fill)
-                        .rounding(12.0)
-                        .inner_margin(24.0)
-                        .show(ui, |ui| {
-                            ui.set_max_width(500.0);
-                            ui.vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("💾").size(72.0));
-                                ui.add_space(15.0);
-                                ui.heading("欢迎使用 XSpace 极速空间探测器");
-                                ui.add_space(10.0);
-                                ui.label(egui::RichText::new("XSpace 是一款基于 Rust 开发的极速、轻量级磁盘分析与空间清理辅助工具。").weak());
-                                ui.label(egui::RichText::new("依托多线程并行扫描引擎，能在数秒内深度检索全盘，精准定位侵占磁盘空间的“元凶”与无用文件。").weak());
+                    ui.set_max_width(520.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("💾").size(72.0));
+                        ui.add_space(15.0);
+                        ui.heading("欢迎使用 XSpace 极速磁盘空间探测器");
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("XSpace 是一款基于 Rust 开发的极速、轻量级磁盘分析与空间清理辅助工具。").weak());
+                        ui.label(egui::RichText::new("依托多线程并行扫描引擎，能在数秒内深度检索全盘，精准定位侵占磁盘空间的“元凶”与无用文件。").weak());
 
-                                ui.add_space(15.0);
-                                ui.separator();
-                                ui.add_space(15.0);
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(15.0);
 
-                                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                    ui.strong("🚀 快速开始：");
-                                    ui.add_space(8.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("1️⃣").strong());
-                                        ui.label("在左侧面板勾选需要扫描的本地磁盘分区。");
-                                    });
-                                    ui.add_space(6.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("2️⃣").strong());
-                                        ui.label("在参数配置中选择所需的扫描类型及阈值。");
-                                    });
-                                    ui.add_space(6.0);
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("3️⃣").strong());
-                                        ui.label("点击【开始扫描】按钮，即刻开启极速并发检索！");
-                                    });
-                                });
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.strong("🚀 快速开始：");
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("①").strong());
+                                ui.label("在左侧面板勾选需要扫描的本地磁盘分区。");
+                            });
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("②").strong());
+                                ui.label("在参数配置中选择所需的扫描类型及阈值。");
+                            });
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("③").strong());
+                                ui.label("点击【开始扫描】按钮，即刻开启极速并发检索！");
                             });
                         });
+                    });
                 });
             }
         });

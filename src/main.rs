@@ -39,9 +39,8 @@ fn configure_custom_style(ctx: &egui::Context) {
             fonts.families.entry(egui::FontFamily::Proportional)
                 .or_default()
                 .insert(0, "custom_chinese".to_owned());
-            fonts.families.entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "custom_chinese".to_owned());
+            // Monospace 家族保持 egui 默认（Hack 等宽字体），用于数字等需要定宽的场景，
+            // 保证数字字形宽度一致、计数变化时不左右抖动。
             ctx.set_fonts(fonts);
             break;
         }
