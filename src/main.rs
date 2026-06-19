@@ -77,16 +77,33 @@ fn configure_custom_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+
+// 解码 logo 为窗口/任务栏图标所需的 RGBA 数据
+fn load_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(LOGO_PNG).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    })
+}
+
 fn main() -> Result<(), eframe::Error> {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([960.0, 620.0])
+        .with_min_inner_size([750.0, 620.0])
+        .with_title("XSpace - 极速磁盘空间探测器");
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 620.0])
-            .with_min_inner_size([750.0, 620.0])
-            .with_title("🔍 XSpace - 极速磁盘空间探测器"),
+        viewport,
         default_theme: eframe::Theme::Light,
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "xspace",
         options,

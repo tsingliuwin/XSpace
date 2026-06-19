@@ -8,3 +8,8 @@ jwalk = "0.8.1"
 sysinfo = "0.38.4"
 rayon = "1.12.0"
 eframe = "0.27.2"
+image = { version = "0.24", default-features = false, features = ["png"] }
+
+[build-dependencies]
+# build.rs 仅在 Windows 目标用到，用于把图标嵌入 .exe（非 Windows 平台 build.rs 里 cfg 跳过）
+winres = "0.1"

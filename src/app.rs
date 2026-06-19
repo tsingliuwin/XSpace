@@ -14,7 +14,23 @@ use crate::types::{
     ScanPreset, Target, Filter, Aggregate, SortBy, Limit,
 };
 use crate::utils::{format_size, reveal_in_file_manager, validate_query, should_skip_path, downloads_dir};
+
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const COMPANY: &str = "苏州遇码科技有限公司";
 use crate::scanner::FileSizeState;
+
+// 解码 logo 为应用内可显示的纹理（欢迎页大图、标题栏小图）
+fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let img = image::load_from_memory(LOGO_PNG).ok()?.into_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let rgba = img.into_raw();
+    Some(ctx.load_texture(
+        "xspace-logo",
+        egui::ColorImage::from_rgba_unmultiplied(size, &rgba),
+        egui::TextureOptions::LINEAR,
+    ))
+}
 
 // 在 Grid 单元格内右对齐显示富文本（用于数字列，便于按位对齐扫读）
 fn right_aligned_label(ui: &mut egui::Ui, text: egui::RichText, width: f32) {
@@ -118,6 +134,7 @@ pub enum DirSort {
 // App 主状态
 pub struct SpaceProbeApp {
     pub disks: Vec<DiskInfo>,
+    pub logo: Option<egui::TextureHandle>,
     pub preset: ScanPreset,
     pub query: String,        // 合并原 file_query / dir_query
     pub exact_match: bool,    // 精确 vs 包含（Name* 预设用）
@@ -148,7 +165,7 @@ pub struct SpaceProbeApp {
 }
 
 impl SpaceProbeApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let disks_list = Disks::new_with_refreshed_list();
         let mut disks = Vec::new();
         for disk in &disks_list {
@@ -217,6 +234,7 @@ impl SpaceProbeApp {
             rx: None,
             cancel_flag: None,
             validation_error: None,
+            logo: load_logo_texture(&cc.egui_ctx),
         }
     }
 
@@ -726,9 +744,12 @@ impl eframe::App for SpaceProbeApp {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.heading("🔍 XSpace");
+                            if let Some(logo) = &self.logo {
+                                ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(28.0, 28.0)));
+                            }
+                            ui.heading("XSpace");
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(egui::RichText::new("极速磁盘空间探测器").weak().size(10.0));
+                                ui.label(egui::RichText::new(format!("极速磁盘空间探测器 · v{}", VERSION)).weak().size(10.0));
                             });
                         });
 
@@ -944,7 +965,7 @@ impl eframe::App for SpaceProbeApp {
 
                         // 利用剩余垂直空间，把"当前状态"卡片贴近面板底部，
                         // 充分填充面板高度，并避免出现滚动条。
-                        let status_reserve = 110.0;
+                        let status_reserve = 132.0;
                         let gap = (ui.available_height() - status_reserve).max(0.0);
                         ui.add_space(gap);
 
@@ -1007,6 +1028,13 @@ impl eframe::App for SpaceProbeApp {
                                         });
                                         ui.end_row();
                                     });
+                                // 底部署名（开发者）
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!("© {}", COMPANY))
+                                        .weak()
+                                        .size(9.0),
+                                );
                             });
                     });
             });
@@ -1250,7 +1278,11 @@ impl eframe::App for SpaceProbeApp {
                     ui.add_space(50.0);
                     ui.set_max_width(520.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("💾").size(72.0));
+                        if let Some(logo) = &self.logo {
+                            ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(96.0, 96.0)));
+                        } else {
+                            ui.label(egui::RichText::new("💾").size(72.0));
+                        }
                         ui.add_space(15.0);
                         ui.heading("欢迎使用 XSpace 极速磁盘空间探测器");
                         ui.add_space(10.0);
@@ -1279,7 +1311,18 @@ impl eframe::App for SpaceProbeApp {
                                 ui.label("点击【开始扫描】按钮，即刻开启极速并发检索！");
                             });
                         });
-                    });
+
+                                ui.add_space(15.0);
+                                ui.separator();
+                                ui.add_space(10.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("© {}  ·  v{}", COMPANY, VERSION))
+                                            .weak()
+                                            .size(11.0),
+                                    );
+                                });
+                        });
                 });
             }
         });
