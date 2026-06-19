@@ -190,7 +190,7 @@ impl SpaceProbeApp {
                 if self.exact_match { Filter::NameExact } else { Filter::NameContains },
                 Aggregate::None,
                 SortBy::Size,
-                Limit::All,
+                if self.show_all { Limit::All } else { Limit::TopN(self.top_n) },
             ),
             ScanPreset::FindDirs => {
                 let aggregate = match self.dir_metric {
@@ -298,6 +298,8 @@ impl SpaceProbeApp {
             // 多盘符并行扫描
             config_clone.selected_roots.into_par_iter().for_each(|root| {
                 let root_path = root.clone();
+                // root 自身不是任何目录的子项，单独计入目录数
+                total_dirs.fetch_add(1, AtomicOrdering::Relaxed);
 
                 // 每根局部状态（单线程 Serial 遍历，无需锁）：
                 //  - empty_dirs: 零成本空目录集合（process_read_dir 即可知某目录无子项）
@@ -307,8 +309,9 @@ impl SpaceProbeApp {
                     && config_inner.filter == Filter::Empty;
                 let aggregate_enabled = config_inner.target == Target::Directory
                     && config_inner.aggregate != Aggregate::None;
-                // 文件大小预读：Largest 比较每个文件阈值；目录聚合需每个文件 size 累加到祖先
-                let preread_sizes = config_inner.filter == Filter::Largest || aggregate_enabled;
+                // 文件大小预读：仅目录聚合查询需要（消费端沿祖先链累加）。
+                // 文件类查询（Largest/Empty）的 stat 改在下面的并行过滤阶段做。
+                let preread_sizes = aggregate_enabled;
 
                 let empty_dirs: Arc<Mutex<HashSet<PathBuf>>> =
                     Arc::new(Mutex::new(HashSet::new()));
@@ -328,15 +331,17 @@ impl SpaceProbeApp {
                         let cancel = cancel_inner.clone();
                         let root_path = root_path.clone();
                         let empty_dirs = empty_dirs.clone();
+                        let config = config_inner.clone();
+                        let total_files = total_files.clone();
+                        let total_dirs = total_dirs.clone();
                         move |_depth, path, _state, children| {
                             if cancel.load(AtomicOrdering::Relaxed) {
                                 children.clear();
                                 return;
                             }
 
-                            // 过滤不需要扫描的系统目录或重复挂载目录。
-                            // 巨型目录下 children 可能有百万级条目，不能让整个 retain
-                            // 长时间不检查 cancel。这里手动 retain，每隔 4096 个检查一次取消。
+                            // 过滤系统/重复挂载目录，并在此时统计文件/目录数（计数前移到并行阶段，
+                            // 这样后续可安全丢弃不命中文件而计数仍准确）。
                             let mut write_idx = 0;
                             for read_idx in 0..children.len() {
                                 if read_idx & 0xFFF == 0 && cancel.load(AtomicOrdering::Relaxed) {
@@ -352,6 +357,13 @@ impl SpaceProbeApp {
                                     }
                                 };
                                 if keep {
+                                    if let Ok(entry) = &children[read_idx] {
+                                        if entry.file_type.is_dir() {
+                                            total_dirs.fetch_add(1, AtomicOrdering::Relaxed);
+                                        } else {
+                                            total_files.fetch_add(1, AtomicOrdering::Relaxed);
+                                        }
+                                    }
                                     if write_idx != read_idx {
                                         children.swap(write_idx, read_idx);
                                     }
@@ -360,8 +372,7 @@ impl SpaceProbeApp {
                             }
                             children.truncate(write_idx);
 
-                            // 预读文件大小（仅 Largest / 目录聚合查询付出此代价）。
-                            // 巨型目录下逐个 metadata() 系统调用会很久，必须每条都检查取消。
+                            // 预读文件大小（仅目录聚合查询付出此代价）。
                             if preread_sizes {
                                 for entry_result in children.iter_mut() {
                                     if cancel.load(AtomicOrdering::Relaxed) {
@@ -377,8 +388,57 @@ impl SpaceProbeApp {
                                 }
                             }
 
+                            // 文件类查询：在并行阶段提前过滤，只保留命中文件 + 全部目录。
+                            // stat（Largest/Empty）在此并行完成；Name* 仅按名匹配不 stat。
+                            // 消费端因此不再遍历海量非命中文件。
+                            if config.target == Target::File {
+                                let query = &config.query;
+                                let min_size = config.min_size_bytes;
+                                let mut w = 0;
+                                for r in 0..children.len() {
+                                    if r & 0xFFF == 0 && cancel.load(AtomicOrdering::Relaxed) {
+                                        children.truncate(w);
+                                        return;
+                                    }
+                                    let keep = if let Ok(entry) = &mut children[r] {
+                                        if entry.file_type.is_dir() {
+                                            true
+                                        } else {
+                                            match config.filter {
+                                                Filter::Largest => {
+                                                    let len =
+                                                        entry.metadata().map(|m| m.len()).unwrap_or(0);
+                                                    entry.client_state = len;
+                                                    len >= min_size
+                                                }
+                                                Filter::Empty => {
+                                                    // 读取失败的文件不计为空（与旧版语义一致）
+                                                    entry.metadata().map(|m| m.len()).unwrap_or(u64::MAX) == 0
+                                                }
+                                                Filter::NameContains => entry
+                                                    .file_name
+                                                    .to_string_lossy()
+                                                    .to_lowercase()
+                                                    .contains(query),
+                                                Filter::NameExact => {
+                                                    entry.file_name.to_string_lossy().to_lowercase() == *query
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        true
+                                    };
+                                    if keep {
+                                        if w != r {
+                                            children.swap(w, r);
+                                        }
+                                        w += 1;
+                                    }
+                                }
+                                children.truncate(w);
+                            }
+
                             // 零成本空文件夹检测：过滤后无任何子项，即记为空目录。
-                            // 无额外系统调用、无递归；仅目录空查询构造此集合。
                             if need_empty_dirs && children.is_empty() {
                                 if let Ok(mut set) = empty_dirs.lock() {
                                     set.insert(path.to_path_buf());
@@ -397,18 +457,12 @@ impl SpaceProbeApp {
                     };
 
                     let is_dir = entry.file_type.is_dir();
-                    if is_dir {
-                        total_dirs.fetch_add(1, AtomicOrdering::Relaxed);
-                    } else {
-                        total_files.fetch_add(1, AtomicOrdering::Relaxed);
-                    }
-
-                    let entry_path = entry.path();
-                    let file_name = entry.file_name.to_string_lossy().to_lowercase();
+                    // 计数已在 process_read_dir 完成（root 在 for_each 开头计入）。
 
                     // 单遍目录聚合：目录建 map 键（pre-order 先于其内容被 yield），
                     // 文件则把 size/count 沿祖先链累加进所有已存在的目录键。
                     if aggregate_enabled {
+                        let entry_path = entry.path();
                         if is_dir {
                             agg_map.entry(entry_path.clone()).or_default();
                         } else {
@@ -422,70 +476,68 @@ impl SpaceProbeApp {
                         }
                     }
 
-                    // 匹配真值表（文件类即时发送；目录聚合类收集候选延迟发送；空目录即时发送）
+                    // 匹配/发送。
+                    // 文件类：process_read_dir 已过滤，此处见到的文件都是命中的，直接发送。
+                    // file_name 与 entry_path 均按需计算（避免为海量非命中条目分配字符串）。
                     match (config_inner.target, config_inner.filter) {
                         (Target::File, Filter::Largest) => {
-                            if !is_dir && entry.client_state >= config_inner.min_size_bytes {
-                                send_file(&tx_clone, entry.client_state, &entry_path, false, None);
+                            if !is_dir {
+                                let p = entry.path();
+                                send_file(&tx_clone, entry.client_state, &p, false, None);
                             }
                         }
                         (Target::File, Filter::Empty) => {
-                            // 显式 metadata：保留"读取失败的文件不计为空"的语义（与旧版一致）
-                            if !is_dir
-                                && let Ok(metadata) = entry.metadata()
-                                && metadata.len() == 0
-                            {
-                                send_file(&tx_clone, 0, &entry_path, false, None);
+                            if !is_dir {
+                                let p = entry.path();
+                                send_file(&tx_clone, 0, &p, false, None);
                             }
                         }
-                        (Target::File, Filter::NameContains) => {
-                            if !is_dir
-                                && file_name.contains(&config_inner.query)
-                                && let Ok(metadata) = entry.metadata()
-                            {
-                                send_file(&tx_clone, metadata.len(), &entry_path, false, None);
-                            }
-                        }
-                        (Target::File, Filter::NameExact) => {
-                            if !is_dir
-                                && file_name == config_inner.query
-                                && let Ok(metadata) = entry.metadata()
-                            {
-                                send_file(&tx_clone, metadata.len(), &entry_path, false, None);
+                        (Target::File, Filter::NameContains) | (Target::File, Filter::NameExact) => {
+                            if !is_dir {
+                                let p = entry.path();
+                                // 命中文件少，按需取大小
+                                let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                                send_file(&tx_clone, size, &p, false, None);
                             }
                         }
                         (Target::Directory, Filter::Empty) => {
-                            if is_dir
-                                && empty_dirs
+                            if is_dir {
+                                let p = entry.path();
+                                let is_empty = empty_dirs
                                     .lock()
-                                    .map(|s| s.contains(entry_path.as_path()))
-                                    .unwrap_or(false)
-                            {
-                                send_file(&tx_clone, 0, &entry_path, true, None);
+                                    .map(|s| s.contains(p.as_path()))
+                                    .unwrap_or(false);
+                                if is_empty {
+                                    send_file(&tx_clone, 0, &p, true, None);
+                                }
                             }
                         }
-                        (Target::Directory, Filter::NameContains) => {
-                            if is_dir && file_name.contains(&config_inner.query) {
-                                candidates.push(entry_path.clone());
-                            }
-                        }
-                        (Target::Directory, Filter::NameExact) => {
-                            if is_dir && file_name == config_inner.query {
-                                candidates.push(entry_path.clone());
+                        (Target::Directory, Filter::NameContains) | (Target::Directory, Filter::NameExact) => {
+                            if is_dir {
+                                let fname = entry.file_name.to_string_lossy().to_lowercase();
+                                let matched = match config_inner.filter {
+                                    Filter::NameContains => fname.contains(&config_inner.query),
+                                    Filter::NameExact => fname == config_inner.query,
+                                    _ => false,
+                                };
+                                if matched {
+                                    candidates.push(entry.path());
+                                }
                             }
                         }
                         // (Directory, Largest) 不由任何预设产生；无操作
                         (Target::Directory, Filter::Largest) => {}
                     }
 
-                    // 控制汇报频率在 100ms 左右
+                    // 控制汇报频率在 100ms 左右（按需算当前路径）
                     if let Ok(mut last) = last_report.try_lock() {
                         if last.elapsed() >= Duration::from_millis(100) {
                             *last = Instant::now();
+                            let current_path = entry.path().display().to_string();
                             let _ = tx_clone.send(ScanMessage::Progress {
                                 files: total_files.load(AtomicOrdering::Relaxed),
                                 dirs: total_dirs.load(AtomicOrdering::Relaxed),
-                                current_path: entry_path.display().to_string(),
+                                current_path,
                             });
                             ctx.request_repaint(); // 刷新 UI 帧
                         }
