@@ -1,8 +1,8 @@
 # 发版流水线：push v* 标签触发，三平台构建并发布 GitHub Release
 # 产物：
-#   - Windows x86_64: XSpace-<版本>-windows-x86_64.zip（含 exe + README）
-#   - macOS arm64:    XSpace-<版本>-macos-arm64.zip（.app + README）
-#   - macOS x86_64:   XSpace-<版本>-macos-x86_64.zip（.app + README）
+#   - Windows x86_64: XSpace-<版本>-windows-x86_64.exe（裸 exe，下载即用）
+#   - macOS arm64:    XSpace-<版本>-macos-arm64.zip（.app 打包，保留签名与权限）
+#   - macOS x86_64:   XSpace-<版本>-macos-x86_64.zip（同上，Intel 版）
 name: Release
 
 on:
@@ -40,23 +40,13 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      # ===== Windows 打包：exe + 使用说明 =====
+      # ===== Windows：裸 exe 直接作为 Release 附件（下载即用，无需解压）=====
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          mkdir -p dist
-          cp target/release/xspace.exe dist/
-          cat > dist/README.txt <<'EOF'
-          XSpace - 极速磁盘空间探测器
-
-          解压后双击 xspace.exe 即可使用，无需安装。
-
-          官网 / 使用指南：https://xspace.xi-n.com
-          © 苏州遇码科技有限公司
-          EOF
-          cd dist && 7z a "../XSpace-${VERSION}-windows-x86_64.zip" xspace.exe README.txt
+          cp target/release/xspace.exe "XSpace-${VERSION}-windows-x86_64.exe"
 
       # ===== macOS 打包：复用 scripts/package-macos.sh（.app + icns + ad-hoc 签名 + zip）=====
       - name: Package (macOS)
@@ -71,6 +61,7 @@ jobs:
         with:
           name: XSpace-${{ matrix.name }}
           path: |
+            *.exe
             *.zip
 
   release:
@@ -107,4 +98,5 @@ jobs:
 
             官网：https://xspace.xi-n.com
           files: |
+            *.exe
             *.zip
