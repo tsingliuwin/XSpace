@@ -1,0 +1,110 @@
+# 发版流水线：push v* 标签触发，三平台构建并发布 GitHub Release
+# 产物：
+#   - Windows x86_64: XSpace-<版本>-windows-x86_64.zip（含 exe + README）
+#   - macOS arm64:    XSpace-<版本>-macos-arm64.zip（.app + README）
+#   - macOS x86_64:   XSpace-<版本>-macos-x86_64.zip（.app + README）
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+          - name: macos-arm64
+            os: macos-latest
+          - name: macos-x86_64
+            os: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      # ===== Windows 打包：exe + 使用说明 =====
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p dist
+          cp target/release/xspace.exe dist/
+          cat > dist/README.txt <<'EOF'
+          XSpace - 极速磁盘空间探测器
+
+          解压后双击 xspace.exe 即可使用，无需安装。
+
+          官网 / 使用指南：https://xspace.xi-n.com
+          © 苏州遇码科技有限公司
+          EOF
+          cd dist && 7z a "../XSpace-${VERSION}-windows-x86_64.zip" xspace.exe README.txt
+
+      # ===== macOS 打包：复用 scripts/package-macos.sh（.app + icns + ad-hoc 签名 + zip）=====
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          bash scripts/package-macos.sh
+          mv "dist/XSpace-${VERSION}.zip" "XSpace-${VERSION}-macos-${{ matrix.name == 'macos-arm64' && 'arm64' || 'x86_64' }}.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: XSpace-${{ matrix.name }}
+          path: |
+            *.zip
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## XSpace ${{ github.ref_name }}
+
+            极速磁盘空间探测器 —— 几秒钟看清磁盘空间都去哪了。
+
+            ### 核心能力
+            - 🔍 **大文件**：按大小阈值揪出最占空间的文件（Top N 榜单）
+            - 📄 **空文件 / 📁 空目录**：一键找出零字节文件与空文件夹，释放空间
+            - 🗂 **搜文件 / 📂 搜目录**：按名字精确或包含匹配，目录支持体积 / 文件数统计
+
+            ### 特性
+            - 多线程并发扫描，数秒扫完全盘，结果实时呈现
+            - 虚拟滚动表格，数万条结果依然流畅
+            - 每条结果可复制路径、在文件管理器中定位；支持一键复制全部 / 导出 TXT
+            - 原生浅色 UI，Windows / macOS 双平台
+
+            官网：https://xspace.xi-n.com
+          files: |
+            *.zip

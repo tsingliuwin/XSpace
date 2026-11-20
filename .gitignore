@@ -2,4 +2,4 @@
 .claude
 node_modules
 cache
-dist
+dist.zcode
