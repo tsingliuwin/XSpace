@@ -1,3 +1,6 @@
+// 无条件 windows subsystem：debug/release 双击或 cargo run 均不弹终端
+#![windows_subsystem = "windows"]
+
 //! XSpace 入口：创建 GPUI 应用、初始化 gpui-kit 与浅色主题、打开主窗口。
 //!
 //! 中文字体由 gpui-kit 的系统字体回退栈处理（Windows: Microsoft YaHei 等），
@@ -11,7 +14,7 @@ mod types;
 mod ui;
 mod utils;
 
-use gpui_kit::{AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, open_window, px, size};
+use gpui_kit::{AppContext, TitlebarOptions, WindowBounds, WindowOptions, open_window, px, size};
 
 use crate::app::XSpaceApp;
 
@@ -23,10 +26,8 @@ fn main() {
         ui::theme::init(cx);
 
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: Default::default(),
-                size: size(px(960.), px(620.)),
-            })),
+            // 窗口在屏幕居中打开
+            window_bounds: Some(WindowBounds::centered(size(px(960.), px(620.)), cx)),
             window_min_size: Some(size(px(750.), px(620.))),
             titlebar: Some(TitlebarOptions {
                 title: Some("XSpace - 极速磁盘空间探测器".into()),
