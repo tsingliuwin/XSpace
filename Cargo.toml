@@ -1,14 +1,18 @@
 [package]
 name = "xspace"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
 jwalk = "0.8.1"
 sysinfo = "0.38.4"
 rayon = "1.12.0"
-eframe = "0.27.2"
-image = { version = "0.24", default-features = false, features = ["png"] }
+# gpui-kit 0.10.0（2026-11-16 发布，crates.io 可直接拉取）
+gpui-kit = "0.10.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Dwm"] }
+raw-window-handle = "0.6"
 
 [build-dependencies]
 # build.rs 仅在 Windows 目标用到，用于把图标嵌入 .exe（非 Windows 平台 build.rs 里 cfg 跳过）

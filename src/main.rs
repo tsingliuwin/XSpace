@@ -1,115 +1,46 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! XSpace 入口：创建 GPUI 应用、初始化 gpui-kit 与浅色主题、打开主窗口。
+//!
+//! 中文字体由 gpui-kit 的系统字体回退栈处理（Windows: Microsoft YaHei 等），
+//! 无需手动注册字体；exe 图标仍由 build.rs 的 winres 嵌入。
 
-mod types;
-mod utils;
-mod scanner;
 mod app;
+mod scan;
+mod scanner;
+mod titlebar_color;
+mod types;
+mod ui;
+mod utils;
 
-use eframe::egui;
-use app::SpaceProbeApp;
+use gpui_kit::{AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, open_window, px, size};
 
-// 配置自定义样式，打造高雅的浅色系风格
-fn configure_custom_style(ctx: &egui::Context) {
-    // 寻找系统中的中文字体以支持多平台（Windows / macOS / Linux）中文显示
-    let font_paths = [
-        // Windows
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        "C:\\Windows\\Fonts\\msyh.ttf",
-        "C:\\Windows\\Fonts\\simsun.ttc",
-        // macOS
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/Library/Fonts/Arial Unicode.ttf",
-        // Linux
-        "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/NotoSansCJK.ttc",
-    ];
+use crate::app::XSpaceApp;
 
-    for path in &font_paths {
-        if let Ok(font_data) = std::fs::read(path) {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "custom_chinese".to_owned(),
-                egui::FontData::from_owned(font_data),
-            );
-            fonts.families.entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "custom_chinese".to_owned());
-            // Monospace 家族保持 egui 默认（Hack 等宽字体），用于数字等需要定宽的场景，
-            // 保证数字字形宽度一致、计数变化时不左右抖动。
-            ctx.set_fonts(fonts);
-            break;
-        }
-    }
+fn main() {
+    gpui_kit::application().run(|cx| {
+        // 使用任何 gpui-kit 组件功能前必须先调用
+        gpui_kit::init(cx);
+        // 浅色主题（对齐旧版 egui 版本的观感）
+        ui::theme::init(cx);
 
-    let mut style = (*ctx.style()).clone();
-    
-    // 增加间距和舒适度
-    style.spacing.item_spacing = egui::vec2(12.0, 10.0);
-    style.spacing.button_padding = egui::vec2(14.0, 8.0);
-    style.visuals.window_rounding = 8.0.into();
-    style.visuals.widgets.noninteractive.rounding = 8.0.into();
-    style.visuals.widgets.inactive.rounding = 6.0.into();
-    style.visuals.widgets.hovered.rounding = 6.0.into();
-    style.visuals.widgets.active.rounding = 6.0.into();
-    
-    // 设置高贵雅致的浅色系配色
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = egui::Color32::from_rgb(0xF3, 0xF4, 0xF6); // 主面板浅灰底色
-    visuals.window_fill = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF); // 容器卡片纯白底色
-    visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(0xF9, 0xFA, 0xFB);
-    visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(0xE5, 0xE7, 0xEB); // 组件未选中填充
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0xD1, 0xD5, 0xDB);
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(0x9C, 0xA3, 0xAF);
-    
-    // 文字颜色微调
-    visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_rgb(0x1F, 0x29, 0x37); // 深色文字
-    visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(0x37, 0x41, 0x51);
-    
-    // 主题高亮强调色
-    visuals.selection.bg_fill = egui::Color32::from_rgb(0xDB, 0xEA, 0xFE); // 浅蓝色选择背景
-    
-    style.visuals = visuals;
-    ctx.set_style(style);
-}
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Default::default(),
+                size: size(px(960.), px(620.)),
+            })),
+            window_min_size: Some(size(px(750.), px(620.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some("XSpace - 极速磁盘空间探测器".into()),
+                ..TitlebarOptions::default()
+            }),
+            ..WindowOptions::default()
+        };
 
-const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
-
-// 解码 logo 为窗口/任务栏图标所需的 RGBA 数据
-fn load_icon() -> Option<egui::IconData> {
-    let img = image::load_from_memory(LOGO_PNG).ok()?.into_rgba8();
-    let (w, h) = img.dimensions();
-    Some(egui::IconData {
-        rgba: img.into_raw(),
-        width: w,
-        height: h,
-    })
-}
-
-fn main() -> Result<(), eframe::Error> {
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([960.0, 620.0])
-        .with_min_inner_size([750.0, 620.0])
-        .with_title("XSpace - 极速磁盘空间探测器");
-    if let Some(icon) = load_icon() {
-        viewport = viewport.with_icon(icon);
-    }
-    let options = eframe::NativeOptions {
-        viewport,
-        default_theme: eframe::Theme::Light,
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "xspace",
-        options,
-        Box::new(|cc| {
-            configure_custom_style(&cc.egui_ctx);
-            Box::new(SpaceProbeApp::new(cc))
-        }),
-    )
+        open_window(options, cx, |window, cx| {
+            let view = cx.new(|cx| XSpaceApp::new(window, cx));
+            // 原生标题栏配色与页面主题一致（Windows DWM；其他平台空实现）
+            titlebar_color::apply(window, cx);
+            view
+        })
+        .expect("failed to open window");
+    });
 }
